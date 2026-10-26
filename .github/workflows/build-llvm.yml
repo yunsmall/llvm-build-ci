@@ -70,7 +70,7 @@ permissions:
 concurrency:
   # 带上 preset 和事件类型：同一 ref 用不同配置档并行跑时不该互相取消，
   # 定时构建也不该被手动构建顶掉
-  group: build-llvm-${{ inputs.llvm_ref || 'main' }}-${{ inputs.platforms || 'both' }}-${{ inputs.preset || 'simple' }}-${{ github.event_name }}
+  group: build-llvm-${{ inputs.llvm_ref || 'main' }}-${{ inputs.platforms || 'both' }}-${{ inputs.preset || 'official' }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -275,7 +275,7 @@ jobs:
       # 不一定带静态库（带了也是发行版版本、链进去就无法跨发行版用），Windows
       # 干脆没有，所以两个平台都照官方版本现编，版本号和校验和与他一致
       - name: 准备第三方库（official 档）
-        if: (inputs.preset || 'simple') == 'official'
+        if: (inputs.preset || 'official') == 'official'
         shell: bash
         env:
           ZLIB_VERSION: '1.3.2'
@@ -367,7 +367,9 @@ jobs:
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
-          PRESET: ${{ inputs.preset || 'simple' }}
+          # 定时构建没有 inputs，兜底走 official（和官方包同款）；手动触发时
+          # inputs.preset 有值（默认 simple），不受影响
+          PRESET: ${{ inputs.preset || 'official' }}
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}

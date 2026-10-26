@@ -104,12 +104,12 @@ Windows 上编译时用的是 runner 镜像自带的 `clang-cl` + `lld-link` 自
 
 ## 每日定时构建
 
-workflow 里带了一个 `schedule`：每天**北京时间 00:00**（UTC 16:00）用默认参数
-（`main` + `simple` + `both` + `zstd`）编一次主线，**不发布 Release**，产物就在
+workflow 里带了一个 `schedule`：每天**北京时间 00:00**（UTC 16:00）用**官方那套参数**
+（`main` + `preset=official` + `both` + `zstd`）编一次主线，**不发布 Release**，产物就在
 Actions 的 artifact 里，保留 14 天。
 
-定时触发没有 `inputs`，所以所有 `inputs.*` 都写了兜底默认值（`|| 'main'` 这种），
-手改默认值时注意别只改 `workflow_dispatch` 那份。
+定时触发没有 `inputs`，所以所有 `inputs.*` 都写了兜底默认值，其中 `preset` 的兜底是
+`official`（手动触发时默认仍是 `simple`）；手改默认值时注意别只改 `workflow_dispatch` 那份。
 
 两个坑：
 - GitHub 的 cron 按 UTC 走，且高峰期可能延迟几分钟到几十分钟；
