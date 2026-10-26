@@ -23,11 +23,38 @@ public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 
 |---|---|---|
 | `llvm_repo` | `llvm/llvm-project` | 换成自己的 fork 就能编带补丁的版本 |
 | `llvm_ref` | `main` | 分支名、tag（`llvmorg-23.1.4`）、**完整** 40 位 commit SHA |
-| `targets` | `X86` | `LLVM_TARGETS_TO_BUILD`，如 `X86;AArch64;RISCV` |
-| `projects` | `clang;lld` | `LLVM_ENABLE_PROJECTS`，只要编译器可填 `clang` |
-| `runtimes` | 空 | `LLVM_ENABLE_RUNTIMES`。留空时 Windows 自动填 `compiler-rt`，Linux 不编；填 `none` 强制都不编 |
+| `preset` | `simple` | 配置档下拉框：`simple` / `official` / `custom`，见下节 |
+| `targets` | 空 | `LLVM_TARGETS_TO_BUILD`，留空=跟随 preset |
+| `projects` | 空 | `LLVM_ENABLE_PROJECTS`，留空=跟随 preset |
+| `runtimes` | 空 | `LLVM_ENABLE_RUNTIMES`，留空=跟随 preset；填 `none` 强制都不编 |
 | `platforms` | `both` | `both` / `linux` / `windows` |
 | `create_release` | `false` | 勾上则发布到本仓库 Release，tag 为 `build/<版本>-<sha7>` |
+
+## 配置档（preset）
+
+`preset` 只负责给 `targets` / `projects` / `runtimes` 填默认值：**输入框留空就跟随 preset，
+填了就以你填的为准**，所以可以只覆盖其中一项。
+
+| preset | targets | projects | runtimes |
+|---|---|---|---|
+| `simple`（默认） | `X86` | `clang;lld` | Windows 自动 `compiler-rt`，Linux 不编 |
+| `official` | `AArch64;ARM;X86;BPF;WebAssembly;RISCV;NVPTX` | `clang;clang-tools-extra;lld` | `compiler-rt;openmp` |
+| `custom` | 按你填的，留空退回 simple | 同左 | 同左 |
+
+`official` 的取值来自官方 `llvm/utils/release/build_llvm_release.bat`（生成
+`clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.zst` 和 MSI 的那个脚本），并且和官方包装出来的
+东西核对过：`llvm-config --targets-built` 正好是上面 7 个后端，`bin/` 里有 clang-tidy、clangd、
+clang-format（clang-tools-extra），`lib/` 里有 `libomp.dll`、`libiomp5md.dll` 和一堆 `clang_rt.*`。
+
+用 `official` 时有两点要知道：
+
+- 它比 `simple` 重很多（多 6 个后端、clang-tools-extra、OpenMP），4 核免费 runner 上
+  Windows 约 2–2.5 h、Linux 约 2.5–3 h，贴着 6 h 上限时要留神。
+- Linux 上 `compiler-rt` 的 sanitizer 只能用 clang 编，workflow 会优先用 runner 自带的
+  `clang` 自举；万一镜像里没有 clang，会自动去掉 `compiler-rt`（保留 `openmp`）并打 warning。
+
+官方那套 `LLVM_ENABLE_LIBXML2/ZLIB/ZSTD=FORCE_ON`（自带 libxml2/zlib/zstd 源码）和
+`LLVM_ENABLE_RPMALLOC=ON` 没有跟，这几个依赖保持关闭，产物不绑第三方库。
 
 ref 解析发生在 `prepare` job：`git fetch --depth 1 origin <ref>`，所以分支名和 tag
 直接可用；SHA 必须是完整 40 位且能从某个 ref 走到（GitHub 不允许按任意悬空对象取）。

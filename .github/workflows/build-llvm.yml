@@ -16,16 +16,24 @@ on:
         description: '分支 / tag / 完整 commit SHA（短 SHA 拉不下来）'
         required: true
         default: 'main'
+      preset:
+        type: choice
+        description: '配置档：simple=clang;lld 加 X86（默认）；official=官方包同款（7 个后端 + clang-tools-extra + compiler-rt;openmp）；custom=只按下面三项填'
+        options:
+          - simple
+          - official
+          - custom
+        default: 'simple'
       targets:
-        description: 'LLVM_TARGETS_TO_BUILD，分号分隔；只自用填 X86 最省时间'
-        required: true
-        default: 'X86'
+        description: 'LLVM_TARGETS_TO_BUILD，留空=跟随 preset（simple 是 X86）'
+        required: false
+        default: ''
       projects:
-        description: 'LLVM_ENABLE_PROJECTS'
-        required: true
-        default: 'clang;lld'
+        description: 'LLVM_ENABLE_PROJECTS，留空=跟随 preset（simple 是 clang;lld）'
+        required: false
+        default: ''
       runtimes:
-        description: 'LLVM_ENABLE_RUNTIMES。留空=Windows 自动用 compiler-rt、Linux 不编；填 none 强制都不编'
+        description: 'LLVM_ENABLE_RUNTIMES，留空=跟随 preset（Windows 会补 compiler-rt，Linux 不编）；填 none 强制都不编'
         required: false
         default: ''
       platforms:
@@ -254,25 +262,69 @@ jobs:
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
+          PRESET: ${{ inputs.preset }}
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}
         run: |
           set -euo pipefail
 
-          extra=()
-          runtimes="${RUNTIMES:-}"
-          # none/off 用来显式关掉 Windows 上那份自动填的 compiler-rt
+          # 预设只负责给下面三项填默认值：输入框留空就跟随预设，填了就以你填的为准，
+          # 所以既能一键用官方配置，也能只改其中一项
+          case "${PRESET}" in
+            official)
+              def_targets="AArch64;ARM;X86;BPF;WebAssembly;RISCV;NVPTX"
+              def_projects="clang;clang-tools-extra;lld"
+              def_runtimes="compiler-rt;openmp"
+              ;;
+            *)
+              def_targets="X86"
+              def_projects="clang;lld"
+              def_runtimes=""
+              ;;
+          esac
+
+          targets="${TARGETS:-$def_targets}"
+          projects="${PROJECTS:-$def_projects}"
+          runtimes="${RUNTIMES:-$def_runtimes}"
+          # none/off 用来显式关掉 Windows 上自动补的 compiler-rt
           case "${runtimes}" in
             none | off | None | Off) runtimes="" ;;
           esac
 
+          has_runtime() {
+            case ";$1;" in
+              *";$2;"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # 从分号列表里去掉一项，用于把当前平台编不了的 runtime 降级掉
+          drop_runtime() {
+            local item keep=''
+            local IFS=';'
+            for item in $1; do
+              [ "$item" = "$2" ] || keep="${keep:+$keep;}$item"
+            done
+            printf '%s' "$keep"
+          }
+
+          extra=()
           if [ "${RUNNER_OS}" = "Linux" ]; then
             # 用 lld 链接，比 GNU ld 快很多，LLVM 这种巨型项目差别明显
             extra+=("-DLLVM_USE_LINKER=lld")
-            # 不编 compiler-rt 时明确走 libgcc：否则 clang 会去 resource dir
+            if has_runtime "${runtimes}" compiler-rt; then
+              # compiler-rt 的 sanitizer 运行时只能用 clang 编，gcc 会直接报错
+              if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+                extra+=("-DCMAKE_C_COMPILER=clang" "-DCMAKE_CXX_COMPILER=clang++")
+              else
+                echo "::warning::runner 上没有 clang，去掉 compiler-rt"
+                runtimes=$(drop_runtime "${runtimes}" compiler-rt)
+              fi
+            fi
+            # 没编 compiler-rt 就明确走 libgcc：否则 clang 会去 resource dir 里
             # 找不存在的 clang_rt.builtins，个别代码（__int128 除法之类）链接失败
-            if [ -z "${runtimes}" ]; then
+            if ! has_runtime "${runtimes}" compiler-rt; then
               extra+=("-DCLANG_DEFAULT_RTLIB=libgcc")
             fi
           elif [ "${RUNNER_OS}" = "Windows" ]; then
@@ -295,13 +347,19 @@ jobs:
 
           if [ -n "${runtimes}" ]; then
             extra+=("-DLLVM_ENABLE_RUNTIMES=${runtimes}")
+            # 官方也关：ORC 的运行时这里用不上，编起来还费时间
+            if has_runtime "${runtimes}" compiler-rt; then
+              extra+=("-DCOMPILER_RT_BUILD_ORC=OFF")
+            fi
           fi
+
+          echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>}"
 
           cmake -S llvm-project/llvm -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/stage/${DIST_NAME}" \
-            -DLLVM_ENABLE_PROJECTS="${PROJECTS}" \
-            -DLLVM_TARGETS_TO_BUILD="${TARGETS}" \
+            -DLLVM_ENABLE_PROJECTS="${projects}" \
+            -DLLVM_TARGETS_TO_BUILD="${targets}" \
             ${HERMETIC_CMAKE_FLAGS} \
             "${extra[@]}"
 
@@ -377,17 +435,22 @@ jobs:
           SHA7: ${{ needs.prepare.outputs.sha7 }}
           REF: ${{ inputs.llvm_ref }}
           REPO: ${{ inputs.llvm_repo }}
+          PRESET: ${{ inputs.preset }}
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
+          RUNTIMES: ${{ inputs.runtimes }}
         run: |
           set -euo pipefail
 
           tag="build/${VERSION}-${SHA7}"
+          # 输入框留空时用占位符，实际生效值在 build 日志的 "preset=..." 行里
           cat > notes.md <<EOF
           LLVM ${VERSION}，源码 ${REPO}@${REF}（${SHA7}）。
 
-          - targets: ${TARGETS}
-          - projects: ${PROJECTS}
+          - preset: ${PRESET}
+          - targets: ${TARGETS:-（跟随 preset）}
+          - projects: ${PROJECTS:-（跟随 preset）}
+          - runtimes: ${RUNTIMES:-（跟随 preset）}
           - 由 GitHub Actions 在 runner 上现编，非官方发布
           EOF
 
