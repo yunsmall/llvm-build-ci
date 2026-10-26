@@ -309,8 +309,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 直接 ninja install：省掉先 all 再 install 的第二遍遍历
-          ninja -C build install
+          ninja -C build
+          # 只装不编译，装的时候顺手 strip：不 strip 的话 Linux 包会大出好几百 MB
+          # （Windows 上没有 strip，CMake 会当成空操作，所以分开写避免踩坑）
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            cmake --install build --strip
+          else
+            cmake --install build
+          fi
 
       - name: 打包 tar.zst
         shell: bash
@@ -327,8 +333,10 @@ jobs:
           fi
 
           cd stage
+          # --long=27 是 128 MB 窗口，正好是 zstd 默认解压上限：压缩率明显好于
+          # 8 MB 默认窗口，又不至于让用户解压时非带 --long 参数不可
           tar "${tar_extra[@]}" -cf - "${DIST_NAME}" \
-            | zstd -19 -T0 -q -o "${DIST_NAME}.tar.zst"
+            | zstd -19 --long=27 -T0 -q -o "${DIST_NAME}.tar.zst"
           # Windows 的 Git Bash 有可能把行尾写成 CRLF，去掉免得 Linux 上 -c 校验失败
           sha256sum "${DIST_NAME}.tar.zst" | tr -d '\r' > "${DIST_NAME}.tar.zst.sha256"
           ls -lh
