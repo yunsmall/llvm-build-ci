@@ -298,9 +298,16 @@ jobs:
             local src="$1" bdir="$2" idir="$3"
             shift 3
             cmake -S "$src" -B "$bdir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX="$idir" "$@"
+              -DCMAKE_INSTALL_PREFIX="$idir" "${pic_flags[@]}" "$@"
             ninja -C "$bdir" install
           }
+
+          # 这三个静态库最后会被链进 libclang-cpp.so 之类的共享库，Linux 上
+          # 不带 -fPIC 就会报 "relocation R_X86_64_PC32 ... recompile with -fPIC"
+          pic_flags=()
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            pic_flags+=("-DCMAKE_POSITION_INDEPENDENT_CODE=ON" "-DCMAKE_C_FLAGS=-fPIC")
+          fi
 
           fetch "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" \
             bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16 zlib.tgz
@@ -489,10 +496,6 @@ jobs:
             )
             third_party="off"
           fi
-
-          # 4 核 / 16 GB 的 runner 上，链接阶段会和 6 个编译进程抢内存，被杀掉时
-          # ninja 往往只留一行 FAILED、连接器一句报错都没有；限制同时进行的链接数
-          extra+=("-DLLVM_PARALLEL_LINK_JOBS=2")
 
           echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party}"
           cmake -S llvm-project/llvm -B build -G Ninja \
