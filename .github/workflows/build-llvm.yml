@@ -44,6 +44,15 @@ on:
           - linux
           - windows
         default: 'both'
+      compress:
+        type: choice
+        description: '产物压缩格式：zstd 和官方包一致、压缩率好且多线程；gzip 到处都能解；xz 更小但慢很多；none 不压缩'
+        options:
+          - zstd
+          - gzip
+          - xz
+          - none
+        default: 'zstd'
       create_release:
         type: boolean
         description: '编完发布到本仓库 Release（tag 为 build/<版本>-<sha7>）'
@@ -497,12 +506,22 @@ jobs:
             cmake --install build
           fi
 
-      - name: 打包 tar.zst
+      - name: 打包
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
+          COMPRESS: ${{ inputs.compress }}
         run: |
           set -euo pipefail
+
+          case "${COMPRESS}" in
+            zstd) ext="tar.zst" ;;
+            gzip) ext="tar.gz" ;;
+            xz) ext="tar.xz" ;;
+            none) ext="tar" ;;
+            *) echo "未知的压缩格式: ${COMPRESS}" >&2; exit 1 ;;
+          esac
+          out="${DIST_NAME}.${ext}"
 
           tar_extra=()
           # Windows 上解包时符号链接建不出来（目标可能还没被解出来），
@@ -514,10 +533,14 @@ jobs:
           cd stage
           # --long=27 是 128 MB 窗口，正好是 zstd 默认解压上限：压缩率明显好于
           # 8 MB 默认窗口，又不至于让用户解压时非带 --long 参数不可
-          tar "${tar_extra[@]}" -cf - "${DIST_NAME}" \
-            | zstd -19 --long=27 -T0 -q -o "${DIST_NAME}.tar.zst"
+          case "${COMPRESS}" in
+            zstd) tar "${tar_extra[@]}" -cf - "${DIST_NAME}" | zstd -19 --long=27 -T0 -q -o "${out}" ;;
+            gzip) tar "${tar_extra[@]}" -cf - "${DIST_NAME}" | gzip -9 > "${out}" ;;
+            xz) tar "${tar_extra[@]}" -cf - "${DIST_NAME}" | xz -9 -T0 -c > "${out}" ;;
+            none) tar "${tar_extra[@]}" -cf "${out}" "${DIST_NAME}" ;;
+          esac
           # Windows 的 Git Bash 有可能把行尾写成 CRLF，去掉免得 Linux 上 -c 校验失败
-          sha256sum "${DIST_NAME}.tar.zst" | tr -d '\r' > "${DIST_NAME}.tar.zst.sha256"
+          sha256sum "${out}" | tr -d '\r' > "${out}.sha256"
           ls -lh
 
       - name: 上传 artifact
@@ -525,9 +548,10 @@ jobs:
         with:
           name: llvm-${{ matrix.platform }}-${{ needs.prepare.outputs.sha7 }}
           path: |
-            stage/*.tar.zst
+            stage/*.tar
+            stage/*.tar.*
             stage/*.sha256
-          # 内容已经是 zstd 压过的，再压一遍只是白烧 CPU
+          # 内容已经压过了，再压一遍只是白烧 CPU
           compression-level: 0
           retention-days: 14
 
@@ -560,6 +584,7 @@ jobs:
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}
+          COMPRESS: ${{ inputs.compress }}
         run: |
           set -euo pipefail
 
@@ -572,6 +597,7 @@ jobs:
           - targets: ${TARGETS:-（跟随 preset）}
           - projects: ${PROJECTS:-（跟随 preset）}
           - runtimes: ${RUNTIMES:-（跟随 preset）}
+          - 压缩: ${COMPRESS}
           - 由 GitHub Actions 在 runner 上现编，非官方发布
           EOF
 

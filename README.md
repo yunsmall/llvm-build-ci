@@ -1,7 +1,8 @@
 # llvm_build
 
 手动触发的 LLVM 编译流水线。给自己仓库加一个 workflow，就能在 GitHub Actions 上
-按任意分支 / tag / commit 编一份 `clang + lld`，产物是解压即用的 `.tar.zst`。
+按任意分支 / tag / commit 编一份 `clang + lld`，产物是解压即用的压缩包
+（默认 `.tar.zst`，可选 `.tar.gz` / `.tar.xz` / 不压缩）。
 
 - workflow：[`.github/workflows/build-llvm.yml`](.github/workflows/build-llvm.yml)
 - 平台：Windows x64（MSVC 工具链，clang-cl 自举 + Ninja）、Linux x64（gcc + lld 链接）
@@ -28,6 +29,7 @@ public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 
 | `projects` | 空 | `LLVM_ENABLE_PROJECTS`，留空=跟随 preset |
 | `runtimes` | 空 | `LLVM_ENABLE_RUNTIMES`，留空=跟随 preset；填 `none` 强制都不编 |
 | `platforms` | `both` | `both` / `linux` / `windows` |
+| `compress` | `zstd` | `zstd`（和官方包一致，多线程）/ `gzip`（到处都能解）/ `xz`（更小但很慢）/ `none` |
 | `create_release` | `false` | 勾上则发布到本仓库 Release，tag 为 `build/<版本>-<sha7>` |
 
 ## 配置档（preset）
@@ -74,6 +76,14 @@ LLVM-23.1.4-Linux-X64/                      # Linux
 ├── include/
 ├── lib/          含 lib/clang/<ver>/ 运行时头文件、cmake 包配置
 └── share/
+```
+
+解压（`compress` 选什么就用什么；7-Zip 21+ 也能直接解 zst）：
+
+```bash
+zstd -d xxx.tar.zst && tar xf xxx.tar   # zstd
+tar xzf xxx.tar.gz                      # gzip
+tar xJf xxx.tar.xz                      # xz
 ```
 
 Windows 解压后：
