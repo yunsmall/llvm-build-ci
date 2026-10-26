@@ -53,8 +53,10 @@ clang-format（clang-tools-extra），`lib/` 里有 `libomp.dll`、`libiomp5md.d
 - Linux 上 `compiler-rt` 的 sanitizer 只能用 clang 编，workflow 会优先用 runner 自带的
   `clang` 自举；万一镜像里没有 clang，会自动去掉 `compiler-rt`（保留 `openmp`）并打 warning。
 
-官方那套 `LLVM_ENABLE_LIBXML2/ZLIB/ZSTD=FORCE_ON`（自带 libxml2/zlib/zstd 源码）和
-`LLVM_ENABLE_RPMALLOC=ON` 没有跟，这几个依赖保持关闭，产物不绑第三方库。
+官方那套 `LLVM_ENABLE_RPMALLOC=ON`（rpmalloc 分配器）和 MSI 安装包没有跟。
+`official` 档会把 zlib 1.3.2 / zstd 1.5.7 / libxml2 2.9.12 三个库**现编并静态链进去**
+（版本号和 sha256 与官方脚本一致），代价是每次多 2–3 分钟；`simple` 档不编，产物不依赖
+任何第三方库。
 
 ref 解析发生在 `prepare` job：`git fetch --depth 1 origin <ref>`，所以分支名和 tag
 直接可用；SHA 必须是完整 40 位且能从某个 ref 走到（GitHub 不允许按任意悬空对象取）。
@@ -114,20 +116,27 @@ LLVM 很慢，如果贴着上限跑，按下面顺序砍：
 ## 和官方 release 包的区别
 
 官方 `clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.zst` 是
-`llvm/utils/release/build_llvm_release.bat` 产出的，包含 MSI 那套完整工具链、开
-了 zlib/zstd/libxml2、带 `compiler-rt` 和 `openmp` 运行时、X86 + AArch64 两个后端。
-本 workflow 是"够用的工具链"路线：
+`llvm/utils/release/build_llvm_release.bat` 产出的。实际拆开比对过，真正的差别只有
+targets、clang-tools-extra、openmp 和第三方库这几项（官方包同样不含 FileCheck 这类
+utils，也没有 PDB）：
 
-| 项 | 官方包 | 本 workflow |
-|---|---|---|
-| MSI 安装包 | 有 | 无 |
-| compiler-rt | 有 | Windows 有（builtins + sanitizer），Linux 无（走 libgcc） |
-| OpenMP | 有 | 无 |
-| zlib / zstd / libxml2 | 开 | 关 |
-| targets | X86 + AArch64 | 默认 X86 |
-| 调试信息 | 保留 PDB | strip |
-| 签名 / attestation | `.jsonl` 证明 | 无 |
-| 构建机 | LLVM 自己的 16 核 depot runner | 免费 4 核 runner |
+| 项 | 官方包 | `simple` | `official` 预设 |
+|---|---|---|---|
+| MSI 安装包 | 有 | 无 | 无 |
+| targets | 7 个后端 | `X86` | 同官方 |
+| projects | `clang;clang-tools-extra;lld` | `clang;lld` | 同官方 |
+| runtimes | `compiler-rt;openmp` | Windows 有 `compiler-rt`，Linux 无 | 同官方 |
+| zlib / zstd / libxml2 | 开（自带源码编） | 关 | 现编同版本并静态链入 |
+| curl / libedit / ffi / terminfo | 开 | 关 | 关 |
+| rpmalloc 分配器 | 开 | 关 | 关 |
+| FileCheck 等 utils | 不装 | 不装 | 不装 |
+| 调试信息 | 无 PDB | Linux 侧 strip | 同左 |
+| 签名 / attestation | `.jsonl` 证明 | 无 | 无 |
+| 构建机 | 16 核 depot runner | 4 核免费 runner | 同左 |
+
+`simple` 档因为不带这几个库，会损失具体功能：`ld.lld --compress-debug-sections=zlib/zstd`、
+`llvm-objcopy --compress-debug-sections` 用不了，libxml2 相关的 clang XML 输出和 lldb 也没有。
+要这些功能就用 `official` 档。
 
 ## 本地复现同样的产物
 
