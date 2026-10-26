@@ -55,7 +55,8 @@ permissions:
 # 同一分支上重复点 Run workflow 时取消上一个，避免两个 LLVM 编译抢 4 个核；
 # 但不同 llvm_ref 之间必须互不影响，否则并行测多个版本会互相取消
 concurrency:
-  group: build-llvm-${{ inputs.llvm_ref }}-${{ inputs.platforms }}
+  # 带上 preset：同一 ref 用不同配置档并行跑时不该互相取消
+  group: build-llvm-${{ inputs.llvm_ref }}-${{ inputs.platforms }}-${{ inputs.preset }}
   cancel-in-progress: true
 
 env:
