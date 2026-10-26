@@ -1,6 +1,6 @@
 name: Build LLVM
 
-run-name: LLVM ${{ inputs.llvm_ref }} (${{ inputs.platforms }})
+run-name: LLVM ${{ inputs.llvm_ref || 'main' }} (${{ inputs.platforms || 'both' }})${{ github.event_name == 'schedule' && ' · 每日构建' || '' }}
 
 # 手动触发的 LLVM 编译流水线：给定分支 / tag / commit，产出一份解压即用的
 # clang + lld 工具链。Windows 用 MSVC 工具链（clang-cl 自举）、Linux 用 gcc
@@ -57,6 +57,10 @@ on:
         type: boolean
         description: '编完发布到本仓库 Release（tag 为 build/<版本>-<sha7>）'
         default: false
+  # 每天北京时间 00:00（UTC 16:00）编一次主线。定时触发没有 inputs，
+  # 下面所有 inputs.* 都写了默认值兜底；不发布 Release，产物留在 artifact 里
+  schedule:
+    - cron: '0 16 * * *'
 
 permissions:
   contents: read
@@ -64,8 +68,9 @@ permissions:
 # 同一分支上重复点 Run workflow 时取消上一个，避免两个 LLVM 编译抢 4 个核；
 # 但不同 llvm_ref 之间必须互不影响，否则并行测多个版本会互相取消
 concurrency:
-  # 带上 preset：同一 ref 用不同配置档并行跑时不该互相取消
-  group: build-llvm-${{ inputs.llvm_ref }}-${{ inputs.platforms }}-${{ inputs.preset }}
+  # 带上 preset 和事件类型：同一 ref 用不同配置档并行跑时不该互相取消，
+  # 定时构建也不该被手动构建顶掉
+  group: build-llvm-${{ inputs.llvm_ref || 'main' }}-${{ inputs.platforms || 'both' }}-${{ inputs.preset || 'simple' }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -101,8 +106,8 @@ jobs:
       - name: 解析 ref 并读取版本号
         id: resolve
         env:
-          LLVM_REPO: ${{ inputs.llvm_repo }}
-          LLVM_REF: ${{ inputs.llvm_ref }}
+          LLVM_REPO: ${{ inputs.llvm_repo || 'llvm/llvm-project' }}
+          LLVM_REF: ${{ inputs.llvm_ref || 'main' }}
         run: |
           set -euo pipefail
 
@@ -139,7 +144,7 @@ jobs:
       - name: 生成平台矩阵
         id: matrix
         env:
-          PLATFORMS: ${{ inputs.platforms }}
+          PLATFORMS: ${{ inputs.platforms || 'both' }}
         run: |
           set -euo pipefail
           case "${PLATFORMS}" in
@@ -175,8 +180,8 @@ jobs:
       - name: 拉取源码
         shell: bash
         env:
-          LLVM_REPO: ${{ inputs.llvm_repo }}
-          LLVM_REF: ${{ inputs.llvm_ref }}
+          LLVM_REPO: ${{ inputs.llvm_repo || 'llvm/llvm-project' }}
+          LLVM_REF: ${{ inputs.llvm_ref || 'main' }}
           EXPECTED_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           set -euo pipefail
@@ -270,7 +275,7 @@ jobs:
       # 不一定带静态库（带了也是发行版版本、链进去就无法跨发行版用），Windows
       # 干脆没有，所以两个平台都照官方版本现编，版本号和校验和与他一致
       - name: 准备第三方库（official 档）
-        if: inputs.preset == 'official'
+        if: (inputs.preset || 'simple') == 'official'
         shell: bash
         env:
           ZLIB_VERSION: '1.3.2'
@@ -362,7 +367,7 @@ jobs:
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
-          PRESET: ${{ inputs.preset }}
+          PRESET: ${{ inputs.preset || 'simple' }}
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}
@@ -510,7 +515,7 @@ jobs:
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
-          COMPRESS: ${{ inputs.compress }}
+          COMPRESS: ${{ inputs.compress || 'zstd' }}
         run: |
           set -euo pipefail
 

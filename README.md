@@ -57,7 +57,7 @@ clang-format（clang-tools-extra），`lib/` 里有 `libomp.dll`、`libiomp5md.d
 
 官方那套 `LLVM_ENABLE_RPMALLOC=ON`（rpmalloc 分配器）和 MSI 安装包没有跟。
 `official` 档会把 zlib 1.3.2 / zstd 1.5.7 / libxml2 2.9.12 三个库**现编并静态链进去**
-（版本号和 sha256 与官方脚本一致），代价是每次多 2–3 分钟；`simple` 档不编，产物不依赖
+（版本号和 sha256 与官方脚本一致），代价是每次多约半分钟；`simple` 档不编，产物不依赖
 任何第三方库。
 
 ref 解析发生在 `prepare` job：`git fetch --depth 1 origin <ref>`，所以分支名和 tag
@@ -102,26 +102,43 @@ Windows 上编译时用的是 runner 镜像自带的 `clang-cl` + `lld-link` 自
 会链接失败。找不到 `clang-cl` 时会退回 `cl.exe` 并在日志里打 warning，此时产物里没有
 `lib/clang/<ver>/lib/windows/*`。
 
-## 预期耗时与磁盘
+## 每日定时构建
 
-免费 runner 是 4 核 / 16 GB 内存，`targets=X86` 的情况下大概：
+workflow 里带了一个 `schedule`：每天**北京时间 00:00**（UTC 16:00）用默认参数
+（`main` + `simple` + `both` + `zstd`）编一次主线，**不发布 Release**，产物就在
+Actions 的 artifact 里，保留 14 天。
 
-| 平台 | 编译 | 打包 | 磁盘峰值 |
-|---|---|---|---|
-| Linux x64 | 1.5–2.5 h | 5–10 min | build ~8 GB + stage ~3 GB |
-| Windows x64 | 3.5–5.5 h | 10–20 min | build ~12 GB + stage ~5 GB |
+定时触发没有 `inputs`，所以所有 `inputs.*` 都写了兜底默认值（`|| 'main'` 这种），
+手改默认值时注意别只改 `workflow_dispatch` 那份。
 
-单 job 硬上限 6 小时，workflow 里设了 `timeout-minutes: 350`。Windows 上 MSVC 编
-LLVM 很慢，如果贴着上限跑，按下面顺序砍：
+两个坑：
+- GitHub 的 cron 按 UTC 走，且高峰期可能延迟几分钟到几十分钟；
+- 仓库连续 60 天没有任何活动时，GitHub 会自动停用定时任务，随便推一次提交就能恢复。
 
-1. `projects` 去掉 `lld`（`clang` 单独能跑，只是没法用 `-fuse-ld=lld`）；
-2. `runtimes` 填 `none` 关掉 compiler-rt（只损失 sanitizer 和极少数内建函数，
-   想保留 builtins 就别动）；
-3. `targets` 保持 `X86`，别加 AArch64；
+## 实测耗时与磁盘
+
+免费 runner 是 4 核 / 16 GB 内存。下表是在 `llvmorg-23.1.4` 上跑出来的实测值：
+
+| 配置 | 平台 | 编译 | 打包 | 总耗时 | 产物 |
+|---|---|---|---|---|---|
+| `simple` | Windows x64 | 57 min | ~10 min | ~1 h | 302 MB |
+| `simple` | Linux x64 | 90–120 min | 5–15 min | 1.5–2 h | 393 MB |
+| `official` | Windows x64 | 64 min | 17 min | 85 min | 524 MB |
+| `official` | Linux x64 | ~2.5 h | — | 略慢于 simple | 待补 |
+
+`official` 档里"准备第三方库"（现编 zlib/zstd/libxml2）只要 **半分钟**，基本可以忽略；
+多出来的时间主要花在 clang-tools-extra 和另外 6 个后端上。单 job 硬上限是 6 小时，
+workflow 设了 `timeout-minutes: 350`，实测两档都离上限很远。
+
+真要再压时间，按这个顺序砍：
+
+1. `targets` 只留 `X86`（别加 AArch64）；
+2. `preset` 用 `simple`，或 `runtimes` 填 `none` 关掉 compiler-rt / OpenMP；
+3. `projects` 去掉 `lld`（`clang` 单独能跑，只是没法用 `-fuse-ld=lld`）；
 4. 换自托管 runner。
 
-磁盘不够时（Windows 报 `No space left on device`）把 `targets` 砍到 `X86`、`projects`
-砍到 `clang`，或者别在同一台 runner 上同时跑两个 LLVM 编译。
+磁盘：build 目录 8–12 GB、stage 再加 3–5 GB，免费 runner 够用；同一台 runner 上
+别并行跑两个 LLVM 编译。
 
 ## 和官方 release 包的区别
 
