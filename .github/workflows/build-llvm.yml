@@ -490,8 +490,11 @@ jobs:
             third_party="off"
           fi
 
-          echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party}"
+          # 4 核 / 16 GB 的 runner 上，链接阶段会和 6 个编译进程抢内存，被杀掉时
+          # ninja 往往只留一行 FAILED、连接器一句报错都没有；限制同时进行的链接数
+          extra+=("-DLLVM_PARALLEL_LINK_JOBS=2")
 
+          echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party}"
           cmake -S llvm-project/llvm -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/stage/${DIST_NAME}" \
@@ -504,7 +507,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ninja -C build
+
+          # 编译晚期最常见的失败原因是内存或磁盘被吃满，先把基线打出来，
+          # 免得事后只能对着 "FAILED" 猜
+          df -h . || true
+          if [ "${RUNNER_OS}" = "Linux" ]; then free -m || true; fi
+
+          if ! ninja -C build; then
+            if [ "${RUNNER_OS}" = "Linux" ]; then
+              echo "::error::ninja 失败，以下是与 OOM 相关的内核日志（若有）"
+              sudo dmesg | tail -n 300 | grep -i -E "out of memory|killed process|oom-kill" || true
+            fi
+            df -h . || true
+            exit 1
+          fi
           # 只装不编译，装的时候顺手 strip：不 strip 的话 Linux 包会大出好几百 MB
           # （Windows 上没有 strip，CMake 会当成空操作，所以分开写避免踩坑）
           if [ "${RUNNER_OS}" = "Linux" ]; then
