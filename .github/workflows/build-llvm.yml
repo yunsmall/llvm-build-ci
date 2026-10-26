@@ -295,16 +295,17 @@ jobs:
             -DZLIB_BUILD_TESTING=OFF -DZLIB_BUILD_SHARED=OFF \
             -DZLIB_BUILD_STATIC=ON -DZLIB_INSTALL=ON
 
+          # zstd/libxml2 的包里带测试目录，里面有符号链接，Windows 上解不出来
           fetch "https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz" \
             eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3 zstd.tgz
-          tar xf zstd.tgz
+          tar xf zstd.tgz --exclude 'tests/*'
           build "zstd-${ZSTD_VERSION}/build/cmake" bzstd "$prefix/zstd" \
             -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF \
             -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF
 
           fetch "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v${LIBXML2_VERSION}/libxml2-v${LIBXML2_VERSION}.tar.gz" \
             98bfa7a9a5e2a75638422050740448ee9f02bf4dc2075c9822d7747d5ff9e617 libxml2.tgz
-          tar xf libxml2.tgz
+          tar xf libxml2.tgz --exclude 'test/*'
           build "libxml2-v${LIBXML2_VERSION}" bxml "$prefix/libxml2" \
             -DBUILD_SHARED_LIBS=OFF -DLIBXML2_WITH_C14N=OFF -DLIBXML2_WITH_CATALOG=OFF \
             -DLIBXML2_WITH_DEBUG=OFF -DLIBXML2_WITH_DOCB=OFF -DLIBXML2_WITH_FTP=OFF \
