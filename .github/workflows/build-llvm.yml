@@ -1,0 +1,395 @@
+name: Build LLVM
+
+run-name: LLVM ${{ inputs.llvm_ref }} (${{ inputs.platforms }})
+
+# 手动触发的 LLVM 编译流水线：给定分支 / tag / commit，产出一份解压即用的
+# clang + lld 工具链。Windows 用 MSVC 工具链（clang-cl 自举）、Linux 用 gcc
+# 编译加 lld 链接。产物形态参考 wasmerio/llvm-custom-builds：Release、strip 过。
+on:
+  workflow_dispatch:
+    inputs:
+      llvm_repo:
+        description: '源码仓库（填自己的 fork 可带补丁构建，例如 yourname/llvm-project）'
+        required: true
+        default: 'llvm/llvm-project'
+      llvm_ref:
+        description: '分支 / tag / 完整 commit SHA（短 SHA 拉不下来）'
+        required: true
+        default: 'main'
+      targets:
+        description: 'LLVM_TARGETS_TO_BUILD，分号分隔；只自用填 X86 最省时间'
+        required: true
+        default: 'X86'
+      projects:
+        description: 'LLVM_ENABLE_PROJECTS'
+        required: true
+        default: 'clang;lld'
+      runtimes:
+        description: 'LLVM_ENABLE_RUNTIMES。留空=Windows 自动用 compiler-rt、Linux 不编；填 none 强制都不编'
+        required: false
+        default: ''
+      platforms:
+        type: choice
+        description: '编译哪些平台'
+        options:
+          - both
+          - linux
+          - windows
+        default: 'both'
+      create_release:
+        type: boolean
+        description: '编完发布到本仓库 Release（tag 为 build/<版本>-<sha7>）'
+        default: false
+
+permissions:
+  contents: read
+
+# 同一分支上重复点 Run workflow 时取消上一个，避免两个 LLVM 编译抢 4 个核；
+# 但不同 llvm_ref 之间必须互不影响，否则并行测多个版本会互相取消
+concurrency:
+  group: build-llvm-${{ inputs.llvm_ref }}-${{ inputs.platforms }}
+  cancel-in-progress: true
+
+env:
+  # 关掉可选依赖，产物不绑定 runner 上碰巧装了的库；UTILS 关掉能省掉
+  # FileCheck 等测试工具（前提是 TESTS 也关，LLVM 的 CMake 有这个断言）
+  HERMETIC_CMAKE_FLAGS: >-
+    -DLLVM_ENABLE_ZLIB=OFF
+    -DLLVM_ENABLE_ZSTD=OFF
+    -DLLVM_ENABLE_LIBXML2=OFF
+    -DLLVM_ENABLE_CURL=OFF
+    -DLLVM_ENABLE_LIBEDIT=OFF
+    -DLLVM_ENABLE_FFI=OFF
+    -DLLVM_ENABLE_BINDINGS=OFF
+    -DLLVM_ENABLE_TERMINFO=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_INCLUDE_DOCS=OFF
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
+    -DLLVM_INCLUDE_UTILS=OFF
+    -DLLVM_INCLUDE_GO_TESTS=OFF
+    -DLLVM_OPTIMIZED_TABLEGEN=ON
+    -DLLVM_ENABLE_ASSERTIONS=OFF
+
+jobs:
+  # 先把 ref 解析成具体提交并读出 LLVM 版本号，后面两个平台用同一份值，
+  # 避免两次 clone 之间上游又推进了分支导致两边版本对不上
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      sha7: ${{ steps.resolve.outputs.sha7 }}
+      version: ${{ steps.resolve.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: 解析 ref 并读取版本号
+        id: resolve
+        env:
+          LLVM_REPO: ${{ inputs.llvm_repo }}
+          LLVM_REF: ${{ inputs.llvm_ref }}
+        run: |
+          set -euo pipefail
+
+          git init -q src
+          cd src
+          git remote add origin "https://github.com/${LLVM_REPO}.git"
+
+          # --depth 1 只取一个提交。分支名和 tag 名都能直接 fetch；
+          # commit SHA 需要服务端允许按 SHA 取（GitHub 对可达提交是允许的）。
+          if ! git fetch -q --depth 1 origin "${LLVM_REF}"; then
+            echo "直接 fetch '${LLVM_REF}' 失败，回退到按分支名取" >&2
+            git fetch -q --depth 1 origin "refs/heads/${LLVM_REF}"
+          fi
+          git checkout -q --detach FETCH_HEAD
+
+          sha=$(git rev-parse HEAD)
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "sha7=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+          # 版本号定义在顶层 cmake/Modules/LLVMVersion.cmake，
+          # 主分支上是下一个大版本号，tag 上是发布号
+          ver_file=cmake/Modules/LLVMVersion.cmake
+          major=$(sed -n 's/.*set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' "$ver_file" | head -n1)
+          minor=$(sed -n 's/.*set(LLVM_VERSION_MINOR \([0-9][0-9]*\)).*/\1/p' "$ver_file" | head -n1)
+          patch=$(sed -n 's/.*set(LLVM_VERSION_PATCH \([0-9][0-9]*\)).*/\1/p' "$ver_file" | head -n1)
+          if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
+            echo "无法从 ${ver_file} 解析版本号" >&2
+            exit 1
+          fi
+
+          echo "version=${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"
+          echo "解析结果: ${major}.${minor}.${patch} @ ${sha}"
+
+      - name: 生成平台矩阵
+        id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "${PLATFORMS}" in
+            both)
+              # ubuntu-22.04 是为了让产物跑在更老的 glibc 上；哪天这个镜像退役了
+              # 换成 ubuntu-24.04 即可（代价是要求更新的 glibc）
+              include='[{"os":"ubuntu-22.04","platform":"linux"},{"os":"windows-2022","platform":"windows"}]'
+              ;;
+            linux)
+              include='[{"os":"ubuntu-22.04","platform":"linux"}]'
+              ;;
+            windows)
+              include='[{"os":"windows-2022","platform":"windows"}]'
+              ;;
+            *)
+              echo "未知的 platforms 取值: ${PLATFORMS}" >&2
+              exit 1
+              ;;
+          esac
+          echo "matrix={\"include\":${include}}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs:
+      - prepare
+    runs-on: ${{ matrix.os }}
+    # 免费 runner 单 job 上限 6 小时，留 10 分钟余量做收尾和上传
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: 拉取源码
+        shell: bash
+        env:
+          LLVM_REPO: ${{ inputs.llvm_repo }}
+          LLVM_REF: ${{ inputs.llvm_ref }}
+          EXPECTED_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          git init -q llvm-project
+          cd llvm-project
+          git remote add origin "https://github.com/${LLVM_REPO}.git"
+          if ! git fetch -q --depth 1 origin "${LLVM_REF}"; then
+            git fetch -q --depth 1 origin "refs/heads/${LLVM_REF}"
+          fi
+          git checkout -q --detach FETCH_HEAD
+
+          # ref 是分支时，prepare 和 build 之间可能又推进了，编译前确认拿到的
+          # 还是同一个提交，否则产物和你以为的版本不一致
+          actual=$(git rev-parse HEAD)
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "提交不一致：期望 ${EXPECTED_SHA}，实际 ${actual}" >&2
+            exit 1
+          fi
+          echo "sources: ${actual}"
+
+      - name: 清理磁盘（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # 22.04 镜像默认只剩十几 G，删掉预装的大块 SDK 才能塞下 build + stage
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/share/swift
+          df -h /
+
+      - name: 查看磁盘（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem |
+            Select-Object Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } }
+
+      - name: 安装构建依赖（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build lld zstd xz-utils
+          # 22.04 自带 cmake 3.22，刚好过 LLVM 23 的 3.20 下限但会告警，
+          # 装个新的免得以后 LLVM 24 直接报错
+          python3 -m pip install --user -q "cmake>=3.31,<4"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # 当前 step 的 PATH 还没变，直接指到新装的那个
+          "$HOME/.local/bin/cmake" --version | head -n1
+          ninja --version
+
+      - name: 初始化 MSVC 环境（Windows）
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 确认 zstd 可用（Windows）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v zstd || choco install zstandard -y --no-progress
+          zstd --version
+          cmake --version | head -n1
+          ninja --version
+
+      - name: 计算产物目录名
+        id: dist
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}" in
+            Windows) name="clang+llvm-${VERSION}-x86_64-pc-windows-msvc" ;;
+            Linux) name="LLVM-${VERSION}-Linux-X64" ;;
+            *) echo "未支持的系统: ${RUNNER_OS}" >&2; exit 1 ;;
+          esac
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "产物目录: ${name}"
+
+      - name: 配置
+        shell: bash
+        env:
+          DIST_NAME: ${{ steps.dist.outputs.name }}
+          TARGETS: ${{ inputs.targets }}
+          PROJECTS: ${{ inputs.projects }}
+          RUNTIMES: ${{ inputs.runtimes }}
+        run: |
+          set -euo pipefail
+
+          extra=()
+          runtimes="${RUNTIMES:-}"
+          # none/off 用来显式关掉 Windows 上那份自动填的 compiler-rt
+          case "${runtimes}" in
+            none | off | None | Off) runtimes="" ;;
+          esac
+
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            # 用 lld 链接，比 GNU ld 快很多，LLVM 这种巨型项目差别明显
+            extra+=("-DLLVM_USE_LINKER=lld")
+            # 不编 compiler-rt 时明确走 libgcc：否则 clang 会去 resource dir
+            # 找不存在的 clang_rt.builtins，个别代码（__int128 除法之类）链接失败
+            if [ -z "${runtimes}" ]; then
+              extra+=("-DCLANG_DEFAULT_RTLIB=libgcc")
+            fi
+          elif [ "${RUNNER_OS}" = "Windows" ]; then
+            # cl.exe 编不了 compiler-rt，而 Windows 版 clang 的产物里带
+            # /DEFAULTLIB:clang_rt.builtins，缺了它有些代码链不上。
+            # runner 镜像自带 LLVM，用它自举：快，且能编 compiler-rt。
+            if command -v clang-cl >/dev/null 2>&1 && command -v lld-link >/dev/null 2>&1; then
+              extra+=(
+                "-DCMAKE_C_COMPILER=clang-cl"
+                "-DCMAKE_CXX_COMPILER=clang-cl"
+                "-DCMAKE_LINKER=lld-link"
+                "-DLLVM_ENABLE_LLD=ON"
+              )
+              [ -n "${runtimes}" ] || runtimes="compiler-rt"
+            else
+              echo "::warning::找不到 clang-cl/lld-link，退回 cl.exe，且不编 compiler-rt"
+              runtimes=""
+            fi
+          fi
+
+          if [ -n "${runtimes}" ]; then
+            extra+=("-DLLVM_ENABLE_RUNTIMES=${runtimes}")
+          fi
+
+          cmake -S llvm-project/llvm -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/stage/${DIST_NAME}" \
+            -DLLVM_ENABLE_PROJECTS="${PROJECTS}" \
+            -DLLVM_TARGETS_TO_BUILD="${TARGETS}" \
+            ${HERMETIC_CMAKE_FLAGS} \
+            "${extra[@]}"
+
+      - name: 编译并安装
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 直接 ninja install：省掉先 all 再 install 的第二遍遍历
+          ninja -C build install
+
+      - name: 打包 tar.zst
+        shell: bash
+        env:
+          DIST_NAME: ${{ steps.dist.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          tar_extra=()
+          # Windows 上解包时符号链接建不出来（目标可能还没被解出来），
+          # 打包时展开成真实文件最省事
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            tar_extra+=("--dereference")
+          fi
+
+          cd stage
+          tar "${tar_extra[@]}" -cf - "${DIST_NAME}" \
+            | zstd -19 -T0 -q -o "${DIST_NAME}.tar.zst"
+          # Windows 的 Git Bash 有可能把行尾写成 CRLF，去掉免得 Linux 上 -c 校验失败
+          sha256sum "${DIST_NAME}.tar.zst" | tr -d '\r' > "${DIST_NAME}.tar.zst.sha256"
+          ls -lh
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-${{ matrix.platform }}-${{ needs.prepare.outputs.sha7 }}
+          path: |
+            stage/*.tar.zst
+            stage/*.sha256
+          # 内容已经是 zstd 压过的，再压一遍只是白烧 CPU
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: 发布到 Release
+    needs:
+      - prepare
+      - build
+    # boolean 输入在 github.event.inputs 里恒为字符串，用字符串比较最稳
+    if: github.event.inputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 创建并上传 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA7: ${{ needs.prepare.outputs.sha7 }}
+          REF: ${{ inputs.llvm_ref }}
+          REPO: ${{ inputs.llvm_repo }}
+          TARGETS: ${{ inputs.targets }}
+          PROJECTS: ${{ inputs.projects }}
+        run: |
+          set -euo pipefail
+
+          tag="build/${VERSION}-${SHA7}"
+          cat > notes.md <<EOF
+          LLVM ${VERSION}，源码 ${REPO}@${REF}（${SHA7}）。
+
+          - targets: ${TARGETS}
+          - projects: ${PROJECTS}
+          - 由 GitHub Actions 在 runner 上现编，非官方发布
+          EOF
+
+          # 重跑同一个提交时 release 已经存在，create 会报错，先查再建
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release ${tag} 已存在，直接覆盖上传"
+          else
+            gh release create "$tag" \
+              --title "LLVM ${VERSION} (${SHA7})" \
+              --notes-file notes.md \
+              --prerelease
+          fi
+          gh release upload "$tag" dist/* --clobber
