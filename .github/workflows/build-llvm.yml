@@ -498,13 +498,43 @@ jobs:
           fi
 
           echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party}"
-          cmake -S llvm-project/llvm -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/stage/${DIST_NAME}" \
-            -DLLVM_ENABLE_PROJECTS="${projects}" \
-            -DLLVM_TARGETS_TO_BUILD="${targets}" \
-            ${HERMETIC_CMAKE_FLAGS} \
+
+          # 把实际用的 cmake 命令原样记下来：release notes 要贴这份，
+          # 不能靠事后照着 workflow 手抄，手抄的会和真正执行的对不上。
+          # 值里带分号的要加引号，否则用户照着贴时 shell 会把分号当命令分隔符
+          cmake_args=(
+            -S llvm-project/llvm
+            -B build
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/stage/${DIST_NAME}"
+            -DLLVM_ENABLE_PROJECTS="${projects}"
+            -DLLVM_TARGETS_TO_BUILD="${targets}"
+            ${HERMETIC_CMAKE_FLAGS}
             "${extra[@]}"
+          )
+          {
+            echo '```'
+            printf 'cmake'
+            for arg in "${cmake_args[@]}"; do
+              case "$arg" in
+                -D*)
+                  printf ' \\\n  '
+                  if printf '%s' "$arg" | grep -q ';'; then
+                    # 只给等号后面的值加引号，-DNAME 部分保持裸露更易读
+                    printf '"%s=%s"' "${arg%%=*}" "${arg#*=}"
+                  else
+                    printf '%s' "$arg"
+                  fi
+                  ;;
+                *) printf ' %s' "$arg" ;;
+              esac
+            done
+            printf '\n```\n'
+          } > "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
+          cat "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
+
+          cmake "${cmake_args[@]}"
 
       - name: 编译并安装
         shell: bash
@@ -567,6 +597,8 @@ jobs:
           esac
           # Windows 的 Git Bash 有可能把行尾写成 CRLF，去掉免得 Linux 上 -c 校验失败
           sha256sum "${out}" | tr -d '\r' > "${out}.sha256"
+          # 配置命令跟着产物一起走，发布时直接贴进 release notes
+          cp "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md" "${DIST_NAME}-cmake.md"
           ls -lh
 
       - name: 上传 artifact
@@ -577,6 +609,7 @@ jobs:
             stage/*.tar
             stage/*.tar.*
             stage/*.sha256
+            stage/*-cmake.md
           # 内容已经压过了，再压一遍只是白烧 CPU
           compression-level: 0
           retention-days: 14
@@ -598,38 +631,52 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: 把各平台的配置命令拼进 notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA7: ${{ needs.prepare.outputs.sha7 }}
+          REF: ${{ inputs.llvm_ref || 'main' }}
+          REPO: ${{ inputs.llvm_repo || 'llvm/llvm-project' }}
+          PRESET: ${{ inputs.preset || 'official' }}
+          COMPRESS: ${{ inputs.compress || 'zstd' }}
+        run: |
+          set -euo pipefail
+
+          cat > notes.md <<EOF
+          LLVM ${VERSION}，源码 ${REPO}@${REF}（${SHA7}）。
+
+          - preset: ${PRESET}
+          - 压缩: ${COMPRESS}
+          - 由 GitHub Actions 在 runner 上现编，非官方发布
+
+          ## 配置命令
+
+          下面是编出各平台产物的 cmake 配置命令原文，由构建过程自己记录。
+          EOF
+
+          for f in dist/*-cmake.md; do
+            [ -e "$f" ] || continue
+            # 文件名形如 LLVM-23.1.4-Linux-X64-cmake.md
+            name=$(basename "$f" -cmake.md)
+            printf '\n### %s\n\n' "$name" >> notes.md
+            cat "$f" >> notes.md
+          done
+
       - name: 创建并上传 Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.prepare.outputs.version }}
           SHA7: ${{ needs.prepare.outputs.sha7 }}
-          REF: ${{ inputs.llvm_ref }}
-          REPO: ${{ inputs.llvm_repo }}
-          PRESET: ${{ inputs.preset }}
-          TARGETS: ${{ inputs.targets }}
-          PROJECTS: ${{ inputs.projects }}
-          RUNTIMES: ${{ inputs.runtimes }}
-          COMPRESS: ${{ inputs.compress }}
         run: |
           set -euo pipefail
 
           tag="build/${VERSION}-${SHA7}"
-          # 输入框留空时用占位符，实际生效值在 build 日志的 "preset=..." 行里
-          cat > notes.md <<EOF
-          LLVM ${VERSION}，源码 ${REPO}@${REF}（${SHA7}）。
-
-          - preset: ${PRESET}
-          - targets: ${TARGETS:-（跟随 preset）}
-          - projects: ${PROJECTS:-（跟随 preset）}
-          - runtimes: ${RUNTIMES:-（跟随 preset）}
-          - 压缩: ${COMPRESS}
-          - 由 GitHub Actions 在 runner 上现编，非官方发布
-          EOF
 
           # 重跑同一个提交时 release 已经存在，create 会报错，先查再建
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release ${tag} 已存在，直接覆盖上传"
+            echo "release ${tag} 已存在，更新 notes 并覆盖上传"
+            gh release edit "$tag" --notes-file notes.md
           else
             gh release create "$tag" \
               --title "LLVM ${VERSION} (${SHA7})" \

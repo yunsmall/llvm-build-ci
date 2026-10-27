@@ -30,7 +30,7 @@ public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 
 | `runtimes` | 空 | `LLVM_ENABLE_RUNTIMES`，留空=跟随 preset；填 `none` 强制都不编 |
 | `platforms` | `both` | `both` / `linux` / `windows` |
 | `compress` | `zstd` | `zstd`（和官方包一致，多线程）/ `gzip`（到处都能解）/ `xz`（更小但很慢）/ `none` |
-| `create_release` | `false` | 勾上则发布到本仓库 Release，tag 为 `build/<版本>-<sha7>` |
+| `create_release` | `false` | 勾上则发布到本仓库 Release，tag 为 `build/<版本>-<sha7>`；release notes 里附各平台实际用的 cmake 配置命令 |
 
 ## 配置档（preset）
 
