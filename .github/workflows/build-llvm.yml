@@ -57,10 +57,12 @@ on:
         type: boolean
         description: '编完发布到本仓库 Release（tag 为 build/<版本>-<sha7>）'
         default: false
-  # 每天北京时间 00:00（UTC 16:00）编一次主线。定时触发没有 inputs，
-  # 下面所有 inputs.* 都写了默认值兜底；不发布 Release，产物留在 artifact 里
+  # 每天北京时间 00:17（UTC 16:17）编一次主线。分钟位特意避开 0：整点是
+  # GitHub 调度器最挤的刻度，实测踩整点的 cron 整段被跳过（一次都没派发）。
+  # 定时触发没有 inputs，下面所有 inputs.* 都写了默认值兜底；
+  # 不发布 Release，产物留在 artifact 里
   schedule:
-    - cron: '0 16 * * *'
+    - cron: '17 16 * * *'
 
 permissions:
   contents: read
@@ -310,11 +312,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          cat > notes.md <<EOF
-          LLVM ${VERSION}，源码 ${REPO}@${REF}（${SHA7}）。
-
-          - preset: ${PRESET}
-          - 压缩: ${COMPRESS}
+          {
+            printf 'LLVM %s，源码 %s@%s（%s）。\n\n' "$VERSION" "$REPO" "$REF" "$SHA7"
+            printf -- '- preset: %s\n' "$PRESET"
+            printf -- '- 压缩: %s\n' "$COMPRESS"
+            # 分隔符必须加引号：正文里带反引号，未加引号的 heredoc 会把它们当命令替换执行，
+            # 结果是这段文字被吞掉、cat 仍然成功，坏掉的 notes 照样发出去（已发生过）
+            cat <<'EOF'
           - 由 GitHub Actions 在 runner 上现编，非官方发布
 
           ## 配置命令
@@ -323,6 +327,7 @@ jobs:
           命令里的 `<workspace>` 指构建时的工作目录，换成你自己的路径即可（`llvm-project/`
           和 `thirdparty/` 都在它下面）。
           EOF
+          } > notes.md
 
           for f in dist/*-cmake.md; do
             [ -e "$f" ] || continue

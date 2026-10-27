@@ -105,9 +105,12 @@ Windows 上编译时用的是 runner 镜像自带的 `clang-cl` + `lld-link` 自
 
 ## 每日定时构建
 
-workflow 里带了一个 `schedule`：每天**北京时间 00:00**（UTC 16:00）用**官方那套参数**
+workflow 里带了一个 `schedule`：每天**北京时间 00:17**（UTC 16:17）用**官方那套参数**
 （`main` + `preset=official` + `both` + `zstd`）编一次主线，**不发布 Release**，产物就在
 Actions 的 artifact 里，保留 14 天。
+
+分钟位不写 0 是有原因的：整点是 GitHub 调度器最挤的刻度，实测 `0 16 * * *` 一整个时段
+都没被派发过；挪到 17 分后正常触发。
 
 定时触发没有 `inputs`，所以所有 `inputs.*` 都写了兜底默认值，其中 `preset` 的兜底是
 `official`（手动触发时默认仍是 `simple`）；手改默认值时注意别只改 `workflow_dispatch` 那份。

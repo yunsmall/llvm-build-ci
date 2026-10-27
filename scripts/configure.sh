@@ -21,9 +21,14 @@ esac
 targets="${TARGETS:-$def_targets}"
 projects="${PROJECTS:-$def_projects}"
 runtimes="${RUNTIMES:-$def_runtimes}"
-# none/off 用来显式关掉 Windows 上自动补的 compiler-rt
+# none/off 用来显式关掉 Windows 上自动补的 compiler-rt：清空之后下面 Windows 分支
+# 还会按"空就补 compiler-rt"处理，所以单独记一笔，别让它被补回去
+runtimes_forbidden=0
 case "${runtimes}" in
-  none | off | None | Off) runtimes="" ;;
+  none | off | None | Off)
+    runtimes=""
+    runtimes_forbidden=1
+    ;;
 esac
 
 has_runtime() {
@@ -72,7 +77,13 @@ elif [ "${RUNNER_OS}" = "Windows" ]; then
       "-DCMAKE_LINKER=lld-link"
       "-DLLVM_ENABLE_LLD=ON"
     )
-    [ -n "${runtimes}" ] || runtimes="compiler-rt"
+    # 用户显式填了 none 就别补，但要说清代价：没 compiler-rt 的 Windows 工具链
+    # 连 __int128 除法这类内置辅助函数都链不上，等于半残
+    if [ "${runtimes_forbidden}" -eq 1 ]; then
+      echo "::warning::显式指定 runtimes=none：产物将不带 compiler-rt，__int128 除法、sanitizer、profile 等会链接失败"
+    else
+      [ -n "${runtimes}" ] || runtimes="compiler-rt"
+    fi
   else
     echo "::warning::找不到 clang-cl/lld-link，退回 cl.exe，且不编 compiler-rt"
     runtimes=""
@@ -125,7 +136,9 @@ echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtim
 # 路径换成占位符，不然别人复制下来只能看着 runner 的绝对路径干瞪眼
 placeholder() {
   local v="$1"
-  v="${v//$GITHUB_WORKSPACE/<workspace>}"
+  # pattern 必须加引号：Windows 下 GITHUB_WORKSPACE 形如 D:\a\repo\repo，
+  # 未加引号的 pattern 会把反斜杠当转义符吃掉，替换静默失效、notes 里漏出 runner 绝对路径
+  v="${v//"$GITHUB_WORKSPACE"/<workspace>}"
   printf '%s' "$v"
 }
 # 关掉可选依赖，产物不绑定 runner 上碰巧装了的库；UTILS 关掉能省掉
@@ -165,7 +178,8 @@ cmake_args=(
     case "$arg" in
       -D*)
         printf ' \\\n  '
-        if printf '%s' "$arg" | grep -q -e ';' -e "$GITHUB_WORKSPACE"; then
+        # -F 走固定字符串：Windows 路径里的反斜杠当正则用会匹配不中，该加引号的没加
+        if printf '%s' "$arg" | grep -F -q -e ';' -e "$GITHUB_WORKSPACE"; then
           # 只给等号后面的值加引号，-DNAME 部分保持裸露更易读
           printf '"%s=%s"' "${arg%%=*}" "$(placeholder "${arg#*=}")"
         else
