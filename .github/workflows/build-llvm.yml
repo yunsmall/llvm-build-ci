@@ -160,6 +160,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
+      # 脚本都在本仓库里，不 checkout 就没有 scripts/*.sh 可跑（以前 shell 内联在
+      # workflow 里才不需要这一步）；LLVM 源码由下一步单独拉，跟这个 checkout 无关
+      - name: 取出本仓库的构建脚本
+        uses: actions/checkout@v5
+
       - name: 拉取源码
         shell: bash
         env:
