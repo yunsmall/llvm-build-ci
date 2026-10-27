@@ -1,22 +1,23 @@
 # llvm_build
 
-手动触发的 LLVM 编译流水线。给自己仓库加一个 workflow，就能在 GitHub Actions 上
-按任意分支 / tag / commit 编一份 `clang + lld`，产物是解压即用的压缩包
-（默认 `.tar.zst`，可选 `.tar.gz` / `.tar.xz` / 不压缩）。
+白嫖 GitHub Actions 编 LLVM 的自用流水线。按任意分支 / tag / commit 编一份
+`clang + lld`，产物是解压即用的压缩包（默认 `.tar.zst`，可选 `.tar.gz` / `.tar.xz` / 不压缩）。
 
 - workflow：[`.github/workflows/build-llvm.yml`](.github/workflows/build-llvm.yml)
-- 平台：Windows x64（MSVC 工具链，clang-cl 自举 + Ninja）、Linux x64（gcc + lld 链接）
+- 脚本：[`scripts/`](scripts/)：拉源码、现编第三方库、配置、编译安装、打包，各一个
+- 平台：Windows x64（clang-cl + lld-link 自举）、Linux x64（clang + lld，没有 clang 时退 gcc）
 - 参考实现：[wasmerio/llvm-custom-builds](https://github.com/wasmerio/llvm-custom-builds)
   （产物形态一致，但那个项目版本写死在 matrix 里、只认 `release/N.x` 分支）
 
 ## 怎么用
 
-1. 把 `.github/workflows/build-llvm.yml` 放进你自己仓库的这个路径，push。
-2. 仓库 Settings → Actions → General，确认 Workflow permissions 允许
+1. 仓库 Settings → Actions → General，确认 Workflow permissions 允许
    `Read and write permissions`（只有勾了 `create_release` 才需要，否则只读就够）。
-3. Actions 页面左侧选 **Build LLVM** → **Run workflow**，填参数。
+2. Actions 页面左侧选 **Build LLVM** → **Run workflow**，填参数。
+3. 不想用网页就 `gh workflow run build-llvm.yml -f llvm_ref=llvmorg-23.1.4 -f preset=official`。
 
 public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 分钟按 2 倍算。
+脚本都是普通 bash，本地可以 `bash -n scripts/*.sh` 做语法检查，也能单独跑起来调试。
 
 ## 输入
 
