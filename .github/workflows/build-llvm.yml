@@ -501,7 +501,13 @@ jobs:
 
           # 把实际用的 cmake 命令原样记下来：release notes 要贴这份，
           # 不能靠事后照着 workflow 手抄，手抄的会和真正执行的对不上。
-          # 值里带分号的要加引号，否则用户照着贴时 shell 会把分号当命令分隔符
+          # 值里带分号的要加引号，否则用户照着贴时 shell 会把分号当命令分隔符。
+          # 路径换成占位符，不然别人复制下来只能看着 runner 的绝对路径干瞪眼
+          placeholder() {
+            local v="$1"
+            v="${v//$GITHUB_WORKSPACE/<workspace>}"
+            printf '%s' "$v"
+          }
           cmake_args=(
             -S llvm-project/llvm
             -B build
@@ -520,17 +526,20 @@ jobs:
               case "$arg" in
                 -D*)
                   printf ' \\\n  '
-                  if printf '%s' "$arg" | grep -q ';'; then
+                  if printf '%s' "$arg" | grep -q -e ';' -e "$GITHUB_WORKSPACE"; then
                     # 只给等号后面的值加引号，-DNAME 部分保持裸露更易读
-                    printf '"%s=%s"' "${arg%%=*}" "${arg#*=}"
+                    printf '"%s=%s"' "${arg%%=*}" "$(placeholder "${arg#*=}")"
                   else
                     printf '%s' "$arg"
                   fi
                   ;;
-                *) printf ' %s' "$arg" ;;
+                *) printf ' %s' "$(placeholder "$arg")" ;;
               esac
             done
             printf '\n```\n'
+            echo
+            echo "源码目录布局：\`llvm-project/\` 是 LLVM 源码，\`thirdparty/\` 是上面三个"
+            echo "静态库的安装前缀（\`<workspace>\` 指这两者共同的上一级目录）。"
           } > "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
           cat "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
 
@@ -652,6 +661,8 @@ jobs:
           ## 配置命令
 
           下面是编出各平台产物的 cmake 配置命令原文，由构建过程自己记录。
+          命令里的 `<workspace>` 指构建时的工作目录，换成你自己的路径即可（`llvm-project/`
+          和 `thirdparty/` 都在它下面）。
           EOF
 
           for f in dist/*-cmake.md; do
@@ -683,4 +694,6 @@ jobs:
               --notes-file notes.md \
               --prerelease
           fi
-          gh release upload "$tag" dist/* --clobber
+          # *-cmake.md 只是生成 notes 的原料，不往 Release 上挂
+          find dist -maxdepth 1 -type f ! -name '*-cmake.md' -print0 |
+            xargs -0 gh release upload "$tag" --clobber
