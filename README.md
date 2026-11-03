@@ -77,7 +77,8 @@ SHA 校验兜底。
 除了宿主自己那份 compiler-rt，默认还会给一组常用目标额外编 **builtins**
 （`libclang_rt.builtins-*`，提供 `__aeabi_*`、软浮点、64 位除法这类编译器辅助函数）。
 用的是 `LLVM_BUILTIN_TARGETS`：只建 `compiler-rt/lib/builtins`，不配置 sanitizer，
-所以不需要目标 sysroot，Windows 宿主也能给 Linux / 裸机目标编。
+并且用 `-ffreestanding` 编译，所以不需要目标 sysroot 或目标 libc 头，Windows 宿主
+也能给 Linux / 裸机目标编。
 
 `builtin_targets` 留空时的默认目标：
 

@@ -117,6 +117,7 @@ target_backend() {
   esac
 }
 
+builtin_extra_args=()
 if [ -n "${builtin_targets}" ]; then
   if ! has_runtime "${projects}" clang; then
     echo "::error::builtin_targets 需要 clang（builtins 由刚编出来的 clang 编译），但 projects=${projects}"
@@ -131,6 +132,13 @@ if [ -n "${builtin_targets}" ]; then
       echo "::error::无法从 ${triple} 推断 LLVM 后端；请把这个 triple 从 builtin_targets 去掉，或手动把对应后端填进 targets"
       exit 1
     fi
+    # Linux / 裸机目标要 freestanding：否则 clang 的 limits.h、stdint.h 会
+    # include_next 宿主 glibc（i686 上直接缺 bits/libc-header-start.h 而失败）。
+    # Windows 目标走 clang-cl，不接受这个 flag，且 MSVC 头本来就在
+    case "${triple}" in
+      *windows* | *msvc*) ;;
+      *) builtin_extra_args+=("-DBUILTINS_${triple}_CMAKE_C_FLAGS=-ffreestanding") ;;
+    esac
     if [ "${targets}" = "all" ]; then
       continue
     fi
@@ -145,6 +153,7 @@ if [ -n "${builtin_targets}" ]; then
 fi
 
 extra=()
+extra+=("${builtin_extra_args[@]}")
 if [ "${RUNNER_OS}" = "Linux" ]; then
   # 用 lld 链接，比 GNU ld 快很多，LLVM 这种巨型项目差别明显
   extra+=("-DLLVM_USE_LINKER=lld")
