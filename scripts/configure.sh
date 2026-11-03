@@ -224,6 +224,10 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
     # PCH 对象里的 inline 模板实例会和 DLL 的导出撞车，lld-link 报
     # duplicate symbol（basic_parser<T> 等）；CMake 这个变量直接禁用 PCH
     extra+=("-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON")
+    # CIR 默认开启会顺带把 MLIR 拉进来；MLIR 的工具同时链静态 LLVMSupport 等
+    # 和 LLVM.dll，COFF 下会报 duplicate symbol（mlir-src-sharder）。
+    # CIR 是实验特性，关掉不影响 C/C++ 编译
+    extra+=("-DCLANG_ENABLE_CIR=OFF")
   fi
 fi
 

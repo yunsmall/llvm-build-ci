@@ -120,7 +120,9 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
   跨 DLL 传递分配过的内存时出现两套堆。PCH 同时禁用
   （`CMAKE_DISABLE_PRECOMPILE_HEADERS=ON`）：PCH 对象里的 inline 模板实例会和
   DLL 导出撞车，lld-link 会报 `duplicate symbol`（`basic_parser<T>` 等），
-  代价是 Windows 动态构建慢一些。
+  代价是 Windows 动态构建慢一些。`CLANG_ENABLE_CIR` 也关掉：它默认开启并自动
+  拉入 MLIR，而 MLIR 工具会同时链静态 LLVM 库和 `LLVM.dll`，COFF 下同样报
+  `duplicate symbol`。CIR 是实验特性，关掉不影响正常 C/C++ 编译。
 - Windows 的 `clang-cpp` 不参与动态链接：clang 的 C++ 头只有少量 `CLANG_ABI`
   注解，`clang-cpp.dll` 导不出完整 API。工具静态链 clang 自己的库，LLVM 部分仍走
   `LLVM.dll`；构建顺带产生的 `clang-cpp.dll` 会从安装目录删掉（只删这一个文件）。
