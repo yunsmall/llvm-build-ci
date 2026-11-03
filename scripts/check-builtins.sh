@@ -16,20 +16,29 @@ missing=0
 while IFS= read -r triple; do
   [ -n "${triple}" ] || continue
 
-  # 驱动自己知道该去哪个目录找运行时；驱动的目录和 compiler-rt 的安装目录
-  # 都按 clang 规范化后的 triple 命名，直接按目录名猜会漏掉补全的字段
+  # 安装目录按规范化后的 triple 命名（aarch64-none-elf -> aarch64-unknown-none-elf），
+  # 拿原始字符串拼路径会找不到
+  canonical=$("${clang_bin}" --target="${triple}" -print-target-triple 2>/dev/null | tr -d '\r')
+  [ -n "${canonical}" ] || canonical="${triple}"
+
+  # 驱动只在目录真实存在时才打印运行时目录，否则输出 "(runtime dir is not present)"；
+  # Windows 下打印的是反斜杠路径，统一成斜杠再喂给 compgen
   runtime_dir=''
-  if "${clang_bin}" --target="${triple}" -print-runtime-dir >/dev/null 2>&1; then
-    runtime_dir=$("${clang_bin}" --target="${triple}" -print-runtime-dir)
+  if out=$("${clang_bin}" --target="${triple}" -print-runtime-dir 2>/dev/null); then
+    out=$(printf '%s' "${out}" | tr -d '\r' | tr '\\' '/')
+    case "${out}" in
+      "("*) ;;
+      *) [ -d "${out}" ] && runtime_dir="${out}" ;;
+    esac
   fi
 
   # Windows 目标的库名带 clang_rt.builtins-*.lib，其余是 libclang_rt.builtins-*.a
   if [ -n "${runtime_dir}" ] && compgen -G "${runtime_dir}/*clang_rt.builtins-*" >/dev/null; then
     echo "builtins: ${triple} -> ${runtime_dir}"
-  elif compgen -G "${stage}/lib/clang/*/lib/${triple}/*clang_rt.builtins-*" >/dev/null; then
-    echo "builtins: ${triple} -> ${stage}/lib/clang/*/lib/${triple}"
+  elif compgen -G "${stage}/lib/clang/*/lib/${canonical}/*clang_rt.builtins-*" >/dev/null; then
+    echo "builtins: ${triple} -> ${stage}/lib/clang/*/lib/${canonical}"
   else
-    echo "::error::缺少 ${triple} 的 builtins"
+    echo "::error::缺少 ${triple}（规范化后 ${canonical}）的 builtins"
     missing=1
   fi
 done < "${list}"
