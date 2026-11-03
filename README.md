@@ -117,7 +117,10 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
   实测 4 KB 级别。上游在 MSVC/clang-cl 上不设 `LLVM_BUILD_LLVM_DYLIB_VIS=ON`
   会直接报 `Generating libLLVM is not supported on MSVC`，所以 Windows 上必须开。
   CRT 同时切成动态 `/MD`（`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL`），避免
-  跨 DLL 传递分配过的内存时出现两套堆。
+  跨 DLL 传递分配过的内存时出现两套堆。PCH 同时禁用
+  （`CMAKE_DISABLE_PRECOMPILE_HEADERS=ON`）：PCH 对象里的 inline 模板实例会和
+  DLL 导出撞车，lld-link 会报 `duplicate symbol`（`basic_parser<T>` 等），
+  代价是 Windows 动态构建慢一些。
 - Windows 的 `clang-cpp` 不参与动态链接：clang 的 C++ 头只有少量 `CLANG_ABI`
   注解，`clang-cpp.dll` 导不出完整 API。工具静态链 clang 自己的库，LLVM 部分仍走
   `LLVM.dll`；构建顺带产生的 `clang-cpp.dll` 会从安装目录删掉（只删这一个文件）。

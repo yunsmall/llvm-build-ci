@@ -221,6 +221,9 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
     extra+=("-DCLANG_LINK_CLANG_DYLIB=OFF")
     # DLL 和调用方共用一份 CRT：静态 CRT 时跨 DLL 传递分配过的内存会炸
     extra+=("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL")
+    # PCH 对象里的 inline 模板实例会和 DLL 的导出撞车，lld-link 报
+    # duplicate symbol（basic_parser<T> 等）；CMake 这个变量直接禁用 PCH
+    extra+=("-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON")
   fi
 fi
 
