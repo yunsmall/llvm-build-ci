@@ -12,6 +12,15 @@ stage="${GITHUB_WORKSPACE}/stage/${DIST_NAME}"
 clang_bin="${stage}/bin/clang"
 [ -x "${clang_bin}" ] || clang_bin="${stage}/bin/clang.exe"
 
+# 按目标分目录的运行时目录里，文件名不带架构后缀（libclang_rt.builtins.a），
+# 宿主自己那份还带（libclang_rt.builtins-x86_64.a）；两种命名都算数
+found_builtins() {
+  compgen -G "$1/*clang_rt.builtins-*" >/dev/null && return 0
+  compgen -G "$1/*clang_rt.builtins.a" >/dev/null && return 0
+  compgen -G "$1/*clang_rt.builtins.lib" >/dev/null && return 0
+  return 1
+}
+
 missing=0
 while IFS= read -r triple; do
   [ -n "${triple}" ] || continue
@@ -32,10 +41,15 @@ while IFS= read -r triple; do
     esac
   fi
 
-  # Windows 目标的库名带 clang_rt.builtins-*.lib，其余是 libclang_rt.builtins-*.a
-  if [ -n "${runtime_dir}" ] && compgen -G "${runtime_dir}/*clang_rt.builtins-*" >/dev/null; then
+  # 驱动在 --rtlib=compiler-rt 下打印的路径就是链接时真正会用的文件，能打印就
+  # 优先按它验证：目录里有文件但驱动找不到（命名/布局不一致）等于白编
+  driver_lib=$("${clang_bin}" --target="${triple}" --rtlib=compiler-rt \
+      -print-libgcc-file-name 2>/dev/null | tr -d '\r')
+  if [ -n "${driver_lib}" ] && [ -f "${driver_lib}" ]; then
+    echo "builtins: ${triple} -> ${driver_lib}"
+  elif [ -n "${runtime_dir}" ] && found_builtins "${runtime_dir}"; then
     echo "builtins: ${triple} -> ${runtime_dir}"
-  elif compgen -G "${stage}/lib/clang/*/lib/${canonical}/*clang_rt.builtins-*" >/dev/null; then
+  elif found_builtins "${stage}/lib/clang/*/lib/${canonical}"; then
     echo "builtins: ${triple} -> ${stage}/lib/clang/*/lib/${canonical}"
   else
     echo "::error::缺少 ${triple}（规范化后 ${canonical}）的 builtins"
