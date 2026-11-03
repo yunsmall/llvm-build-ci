@@ -79,17 +79,17 @@ SHA 校验兜底。
 用的是 `LLVM_BUILTIN_TARGETS`：只建 `compiler-rt/lib/builtins`，不配置 sanitizer，
 所以不需要目标 sysroot 也能交叉编。为了让这套东西在 Windows 宿主机上也能跑：
 
-- 所有非 Windows 目标都加 `-ffreestanding`，避免 clang 自带的 `limits.h`、
-  `stdint.h` 去 `include_next` 宿主 glibc。
-- Linux 目标额外打开 `COMPILER_RT_BAREMETAL_BUILD`。builtins 里只有
-  `emutls.c`、`eprintf.c`、`enable_execute_stack.c` 依赖目标 libc 的头和实现，
-  裸机模式会把它们排除（正常链接 Linux 程序时这三样由目标 libc 提供，用不到
-  builtins 里的份）。剩下少量代码要 `assert.h`、`sys/auxv.h`、`sys/cachectl.h`
-  等头，构建时用一个只含声明的最小垫片目录顶上，真正的实现（`getauxval`、
+- 所有非 Windows 目标都加 `-ffreestanding` 并打开 `COMPILER_RT_BAREMETAL_BUILD`。
+  前者避免 clang 自带的 `limits.h`、`stdint.h` 去 `include_next` 宿主 glibc；
+  后者去掉 builtins 里依赖目标 libc 的头和实现的 `emutls.c`、`eprintf.c`、
+  `enable_execute_stack.c`（正常链接目标程序时这三样由目标 libc 提供，用不到
+  builtins 里的份）。
+- Linux 目标剩下少量代码还要 `assert.h`、`sys/auxv.h`、`sys/cachectl.h` 等头，
+  构建时用一个只含声明的最小垫片目录顶上，真正的实现（`getauxval`、
   `_flush_cache`）留给目标 libc 在链接时解析。
 - Windows 目标走 clang-cl，MSVC 头本来就在 runner 上，不用加这些。
 
-因此 Linux 目标的 builtins 里没有 `__emutls_*` 和 `__enable_execute_stack`，
+因此非 Windows 目标的 builtins 里没有 `__emutls_*` 和 `__enable_execute_stack`，
 其余算术符号完整。
 
 `builtin_targets` 留空时的默认目标：

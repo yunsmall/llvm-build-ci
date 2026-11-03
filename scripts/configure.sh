@@ -143,13 +143,15 @@ if [ -n "${builtin_targets}" ]; then
       *windows* | *msvc*) ;;
       *)
         cflags='-ffreestanding'
+        # builtins 默认会编 emutls / eprintf / enable_execute_stack，它们要目标
+        # libc 的 stdlib.h、stdio.h、sys/mman.h；交叉时没有目标 sysroot（Windows
+        # 宿主更是一个 Linux 头文件都没有）。裸机模式去掉这三个，它们正常链接
+        # Linux 程序时由目标 libc 提供，builtins 里的份用不上
+        builtin_extra_args+=("-DBUILTINS_${triple}_COMPILER_RT_BAREMETAL_BUILD=ON")
         case "${triple}" in
           *linux*)
-            # Linux 目标默认会编 emutls / eprintf / enable_execute_stack，
-            # 它们要目标 libc 的 stdlib.h、stdio.h、sys/mman.h；交叉时没有目标
-            # sysroot（Windows 宿主更是一个 Linux 头文件都没有）。裸机模式去掉
-            # 这三个，它们正常链接 Linux 程序时由目标 libc 提供，builtins 里
-            # 的份用不上；剩下的代码只要几个只有声明的头文件
+            # 剩下少量代码在 __linux__ 下要 assert.h、sys/auxv.h、sys/cachectl.h
+            # 等头，用只含声明的垫片顶上
             if [ "${stub_include_ready}" -eq 0 ]; then
               mkdir -p "${stub_include}/sys"
               cat > "${stub_include}/assert.h" <<'HEADER'
