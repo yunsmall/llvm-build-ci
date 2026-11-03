@@ -49,8 +49,8 @@ drop_runtime() {
 }
 
 # 交叉目标的 compiler-rt builtins（软浮点、64 位除法这类编译器辅助函数）。
-# LLVM_BUILTIN_TARGETS 只构建 lib/builtins，不碰 sanitizer，因此不需要目标
-# sysroot，Windows 宿主编 Linux / 裸机目标也能用。
+# LLVM_BUILTIN_TARGETS 只构建 lib/builtins，不碰 sanitizer；裸机目标本身不需要
+# 任何目标头文件，Linux 目标则要特殊处理（见下面的 -ffreestanding / 裸机模式）。
 # 输入留空=默认列表；none=关；all=再加冷门架构
 builtin_targets_default="i686-unknown-linux-gnu
 aarch64-unknown-linux-gnu
@@ -125,6 +125,10 @@ if [ -n "${builtin_targets}" ]; then
   fi
 
   builtin_extra_backends=''
+  # clear_cache.c 在 __linux__ 下 include assert.h，而交叉编时目标 libc 头不可用；
+  # 垫片只把 assert 变成空操作（Release 构建本来也是空操作），按需生成
+  stub_include="${GITHUB_WORKSPACE}/builtins-stub-include"
+  stub_include_ready=0
   # triple 里不会有空白，直接按空格拆，避免 here-string 带的换行混进最后一个字段
   for triple in $(printf '%s' "${builtin_targets}" | tr ';' ' '); do
     arch=${triple%%-*}
@@ -137,7 +141,70 @@ if [ -n "${builtin_targets}" ]; then
     # Windows 目标走 clang-cl，不接受这个 flag，且 MSVC 头本来就在
     case "${triple}" in
       *windows* | *msvc*) ;;
-      *) builtin_extra_args+=("-DBUILTINS_${triple}_CMAKE_C_FLAGS=-ffreestanding") ;;
+      *)
+        cflags='-ffreestanding'
+        case "${triple}" in
+          *linux*)
+            # Linux 目标默认会编 emutls / eprintf / enable_execute_stack，
+            # 它们要目标 libc 的 stdlib.h、stdio.h、sys/mman.h；交叉时没有目标
+            # sysroot（Windows 宿主更是一个 Linux 头文件都没有）。裸机模式去掉
+            # 这三个，它们正常链接 Linux 程序时由目标 libc 提供，builtins 里
+            # 的份用不上；剩下的代码只要几个只有声明的头文件
+            if [ "${stub_include_ready}" -eq 0 ]; then
+              mkdir -p "${stub_include}/sys"
+              cat > "${stub_include}/assert.h" <<'HEADER'
+#ifndef BUILTINS_STUB_ASSERT_H
+#define BUILTINS_STUB_ASSERT_H
+
+/* 交叉编 builtins 专用：目标 libc 头不可用，clear_cache.c 只用 assert 检查
+   缓存刷新系统调用是否失败，Release 构建本来就把断言编成空操作 */
+#define assert(expr) ((void)0)
+
+#endif
+HEADER
+              cat > "${stub_include}/sys/auxv.h" <<'HEADER'
+#ifndef BUILTINS_STUB_SYS_AUXV_H
+#define BUILTINS_STUB_SYS_AUXV_H
+
+/* 交叉编 aarch64 Linux builtins 专用：cpu_model/aarch64.c 用 getauxval 查
+   HWCAP 决定是否启用 LSE 原子操作，这里只声明原型，实现由目标 libc 提供 */
+unsigned long int getauxval(unsigned long int type);
+
+#endif
+HEADER
+              # MIPS 的 clear_cache.c 在 ISA6 以下走 libc 的 _flush_cache，
+              # 另外两个头只是顺带 include 的，这里给空壳
+              cat > "${stub_include}/sys/cachectl.h" <<'HEADER'
+#ifndef BUILTINS_STUB_SYS_CACHECTL_H
+#define BUILTINS_STUB_SYS_CACHECTL_H
+
+/* 交叉编 MIPS Linux builtins 专用；BCACHE 的值取自 linux/arch/mips 的
+   asm/cachectl.h，_flush_cache 的实现由目标 libc 提供 */
+#define BCACHE 3
+int _flush_cache(char *addr, const int nbytes, const int op);
+
+#endif
+HEADER
+              cat > "${stub_include}/sys/syscall.h" <<'HEADER'
+#ifndef BUILTINS_STUB_SYS_SYSCALL_H
+#define BUILTINS_STUB_SYS_SYSCALL_H
+#endif
+HEADER
+              cat > "${stub_include}/unistd.h" <<'HEADER'
+#ifndef BUILTINS_STUB_UNISTD_H
+#define BUILTINS_STUB_UNISTD_H
+#endif
+HEADER
+              stub_include_ready=1
+            fi
+            # CMake 参数里的反斜杠会被当转义符，Windows 宿主下换成斜杠
+            stub_flags=$(printf '%s' "${stub_include}" | tr '\\' '/')
+            cflags="${cflags} -I${stub_flags}"
+            builtin_extra_args+=("-DBUILTINS_${triple}_COMPILER_RT_BAREMETAL_BUILD=ON")
+            ;;
+        esac
+        builtin_extra_args+=("-DBUILTINS_${triple}_CMAKE_C_FLAGS=${cflags}")
+        ;;
     esac
     if [ "${targets}" = "all" ]; then
       continue
