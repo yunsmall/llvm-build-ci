@@ -68,8 +68,9 @@ clang-format（clang-tools-extra），`lib/` 里有 `libomp.dll`、`libiomp5md.d
 
 ref 解析发生在 `prepare` job：`git fetch --depth 1 origin <ref>`，所以分支名和 tag
 直接可用；SHA 必须是完整 40 位且能从某个 ref 走到（GitHub 不允许按任意悬空对象取）。
-`build` job 会校验自己拿到的 SHA 与 `prepare` 解析出的一致，分支在两次 clone 之间
-推进时会直接报错，不会悄悄编错版本。
+`build` job 按 `prepare` 解析出的 SHA 直接浅拉，不再拉分支名——否则两次 fetch 之间
+上游推进会让两边版本对不上。只有在服务端不允许按 SHA 取时才退回按 ref 取，并保留
+SHA 校验兜底。
 
 ## 交叉编译 builtins
 

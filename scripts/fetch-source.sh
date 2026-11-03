@@ -6,13 +6,18 @@ set -euo pipefail
 git init -q llvm-project
 cd llvm-project
 git remote add origin "https://github.com/${LLVM_REPO}.git"
-if ! git fetch -q --depth 1 origin "${LLVM_REF}"; then
-  git fetch -q --depth 1 origin "refs/heads/${LLVM_REF}"
+# 直接按 prepare 解析好的 SHA 取：分支名会在 prepare 和 build 之间前进，
+# 按 ref 取就会和 prepare 的版本对不上（已实际踩到）。服务端不允许按
+# SHA 取时才退回 ref，让下面的校验报错。
+if ! git fetch -q --depth 1 origin "${EXPECTED_SHA}"; then
+  echo "按 SHA 拉取失败，回退到按 ref 取" >&2
+  if ! git fetch -q --depth 1 origin "${LLVM_REF}"; then
+    git fetch -q --depth 1 origin "refs/heads/${LLVM_REF}"
+  fi
 fi
 git checkout -q --detach FETCH_HEAD
 
-# ref 是分支时，prepare 和 build 之间可能又推进了，编译前确认拿到的
-# 还是同一个提交，否则产物和你以为的版本不一致
+# 回退路径下仍要确认拿到的还是同一个提交
 actual=$(git rev-parse HEAD)
 if [ "${actual}" != "${EXPECTED_SHA}" ]; then
   echo "提交不一致：期望 ${EXPECTED_SHA}，实际 ${actual}" >&2
