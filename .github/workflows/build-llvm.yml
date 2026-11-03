@@ -36,6 +36,14 @@ on:
         description: 'LLVM_ENABLE_RUNTIMES，留空=跟随 preset（Windows 会补 compiler-rt，Linux 不编）；填 none 强制都不编'
         required: false
         default: ''
+      builtin_targets:
+        description: '额外交叉编 compiler-rt builtins 的目标 triple（分号分隔）；留空=默认列表（ARM/AArch64/RISC-V/WebAssembly 常用目标）；none=不编；all=再加 LoongArch/PowerPC/SystemZ/Mips 等'
+        required: false
+        default: ''
+      shared_llvm:
+        type: boolean
+        description: '编动态 LLVM 库（Windows 产 LLVM.dll + LLVM-C.dll、Linux 产 libLLVM-<ver>.so），自己写测试时链接它，不用每个 exe 静态带一份 LLVM'
+        default: false
       platforms:
         type: choice
         description: '编译哪些平台'
@@ -263,11 +271,22 @@ jobs:
           TARGETS: ${{ inputs.targets }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}
+          BUILTIN_TARGETS: ${{ inputs.builtin_targets }}
+          SHARED_LLVM: ${{ inputs.shared_llvm }}
         run: bash scripts/configure.sh
 
       - name: 编译并安装
         shell: bash
+        env:
+          DIST_NAME: ${{ steps.dist.outputs.name }}
+          SHARED_LLVM: ${{ inputs.shared_llvm }}
         run: bash scripts/build-install.sh
+
+      - name: 校验交叉 builtins
+        shell: bash
+        env:
+          DIST_NAME: ${{ steps.dist.outputs.name }}
+        run: bash scripts/check-builtins.sh
 
       - name: 打包
         shell: bash

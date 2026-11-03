@@ -29,6 +29,8 @@ public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 
 | `targets` | 空 | `LLVM_TARGETS_TO_BUILD`，留空=跟随 preset |
 | `projects` | 空 | `LLVM_ENABLE_PROJECTS`，留空=跟随 preset |
 | `runtimes` | 空 | `LLVM_ENABLE_RUNTIMES`，留空=跟随 preset；填 `none` 强制都不编 |
+| `builtin_targets` | 空 | 额外交叉编 compiler-rt **builtins** 的目标 triple（`;` 分隔）；留空=默认列表；`none`=关；`all`=再加冷门架构，见下节 |
+| `shared_llvm` | `false` | 编动态 LLVM 库：Windows 产 `LLVM.dll` + `LLVM-C.dll`，Linux 产 `libLLVM-<ver>.so`，工具也链到动态库上 |
 | `platforms` | `both` | `both` / `linux` / `windows` |
 | `compress` | `zstd` | `zstd`（和官方包一致，多线程）/ `gzip`（到处都能解）/ `xz`（更小但很慢）/ `none` |
 | `create_release` | `false` | 勾上则发布到本仓库 Release，tag 为 `build/<版本>-<sha7>`；release notes 里附各平台实际用的 cmake 配置命令 |
@@ -43,6 +45,9 @@ public 仓库跑 Actions 不花额度；private 仓库按分钟计费，Windows 
 | `simple`（默认） | `X86` | `clang;lld` | Windows 自动 `compiler-rt`，Linux 不编 |
 | `official` | `AArch64;ARM;X86;BPF;WebAssembly;RISCV;NVPTX` | `clang;clang-tools-extra;lld` | `compiler-rt;openmp` |
 | `custom` | 按你填的，留空退回 simple | 同左 | 同左 |
+
+`builtin_targets` 默认开启，它需要的后端会自动补进 `targets`（见“交叉编译 builtins”），
+所以默认配置下 `simple` 也会带 ARM / AArch64 / RISC-V / WebAssembly 后端。
 
 `official` 的取值来自官方 `llvm/utils/release/build_llvm_release.bat`（生成
 `clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.zst` 和 MSI 的那个脚本），并且和官方包装出来的
@@ -65,6 +70,73 @@ ref 解析发生在 `prepare` job：`git fetch --depth 1 origin <ref>`，所以�
 直接可用；SHA 必须是完整 40 位且能从某个 ref 走到（GitHub 不允许按任意悬空对象取）。
 `build` job 会校验自己拿到的 SHA 与 `prepare` 解析出的一致，分支在两次 clone 之间
 推进时会直接报错，不会悄悄编错版本。
+
+## 交叉编译 builtins
+
+除了宿主自己那份 compiler-rt，默认还会给一组常用目标额外编 **builtins**
+（`libclang_rt.builtins-*`，提供 `__aeabi_*`、软浮点、64 位除法这类编译器辅助函数）。
+用的是 `LLVM_BUILTIN_TARGETS`：只建 `compiler-rt/lib/builtins`，不配置 sanitizer，
+所以不需要目标 sysroot，Windows 宿主也能给 Linux / 裸机目标编。
+
+`builtin_targets` 留空时的默认目标：
+
+| 类别 | triple |
+|---|---|
+| Linux | `i686-unknown-linux-gnu`、`aarch64-unknown-linux-gnu`、`armv7-unknown-linux-gnueabi`（软浮点）、`armv7-unknown-linux-gnueabihf`（硬浮点）、`riscv64-unknown-linux-gnu` |
+| 裸机 | `aarch64-none-elf`、`armv6m-none-eabi`、`armv7m-none-eabi`、`armv7em-none-eabi`、`riscv32-unknown-elf`、`riscv64-unknown-elf` |
+| WebAssembly | `wasm32-unknown-unknown` |
+
+`builtin_targets=all` 再追加 `loongarch64-unknown-linux-gnu`、
+`powerpc64le-unknown-linux-gnu`、`s390x-unknown-linux-gnu`、`mips64el-unknown-linux-gnuabi64`、
+`sparcv9-unknown-linux-gnu`、`aarch64_be-unknown-linux-gnu`；Windows 宿主再加
+`i686-pc-windows-msvc`、`aarch64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`。
+也可以自己填任意 triple，空格、换行、逗号、分号分隔都行。
+
+两个自动行为：
+
+- 对应后端会自动补进 `LLVM_TARGETS_TO_BUILD`。builtins 由刚编出来的 clang 编译，
+  后端不在 clang 里会直接报 unknown target。
+- 安装后有一个校验步骤，用产物里的 clang 查每个 triple 的运行时目录，
+  找不到 `*clang_rt.builtins-*` 就把 job 判失败，避免配置成功却静默漏编。
+
+产物在 `lib/clang/<ver>/lib/<triple>/` 下，clang 用 `--target=<triple>` 时自动能找到。
+
+代价：每个 triple 一次配置加少量编译，1～3 分钟；默认 12 个大约多 15～30 分钟，
+`all` 再多 15～20 分钟，每个 triple 的产物只有几 MB。交叉编的**只有 builtins**，
+sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 和 crt）。
+
+## 动态 LLVM 库
+
+`shared_llvm=true` 时额外编动态库，自己写测试链接它就不用每个 exe 静态塞一份 LLVM：
+
+- Linux：`libLLVM-<ver>.so` 和 `libclang-cpp.so`，`clang` 等工具通过
+  `LLVM_LINK_LLVM_DYLIB` 链到它们上面。
+- Windows：同时产 `LLVM.dll`（C++ API）和 `LLVM-C.dll`（C API），以及各自的导入库。
+  `LLVM-C.dll` 链接 `LLVM.dll`，链接器只会生成转发桩，不会复制第二份 LLVM；
+  实测 4 KB 级别。上游在 MSVC/clang-cl 上不设 `LLVM_BUILD_LLVM_DYLIB_VIS=ON`
+  会直接报 `Generating libLLVM is not supported on MSVC`，所以 Windows 上必须开。
+  CRT 同时切成动态 `/MD`（`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL`），避免
+  跨 DLL 传递分配过的内存时出现两套堆。
+- Windows 的 `clang-cpp` 不参与动态链接：clang 的 C++ 头只有少量 `CLANG_ABI`
+  注解，`clang-cpp.dll` 导不出完整 API。工具静态链 clang 自己的库，LLVM 部分仍走
+  `LLVM.dll`；构建顺带产生的 `clang-cpp.dll` 会从安装目录删掉（只删这一个文件）。
+  静态链 clang 库时 C++ 标准库仍是动态的：整个构建用 `/MD`，运行时依赖
+  `msvcp140.dll` / `vcruntime140.dll`。
+
+静态库照常安装，需要静态链接时还能用；`shared_llvm` 只是额外多出动态库，
+并让工具链到动态库上。compiler-rt 的 builtins 不受影响。
+
+注意：
+
+- `LLVM_BUILD_LLVM_DYLIB_VIS` 上游仍标注为“用于测试”，Windows 上的导出依赖
+  `LLVM_ABI` 注解，可能有个别符号没导出；遇到链接错误先确认是不是缺导出。
+- C++ API 没有 ABI 稳定保证。调用方要和构建时用同一套 ABI 和 CRT（Windows 上
+  同一 MSVC 运行时、同一个 `_ITERATOR_DEBUG_LEVEL`），不要混用 MSVC 和 MinGW。
+- Windows 上因为改用动态 CRT，产物运行时依赖 VC++ 运行库
+  （`vcruntime140.dll` / `msvcp140.dll`），目标机器没装 redist 时要一并带上。
+- 代价是多一次巨型链接，Windows 上大约多 5～15 分钟；包会比纯静态模式大一些
+  （多出 DLL），但每个测试 exe 会从几十/上百 MB 降到几 MB。
+- 默认不开，保持原来“纯静态、解压即用”的形态。
 
 ## 产物
 

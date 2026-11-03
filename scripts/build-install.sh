@@ -23,3 +23,9 @@ if [ "${RUNNER_OS}" = "Linux" ]; then
 else
   cmake --install build
 fi
+
+# shared_llvm 的 Windows 构建会顺带产 clang-cpp.dll，但 clang 头只有少量
+# CLANG_ABI 注解，DLL 导不出 C++ API，工具也不链它，留着纯占空间
+if [ "${RUNNER_OS}" = "Windows" ] && [ "${SHARED_LLVM:-false}" = "true" ]; then
+  rm -f "${GITHUB_WORKSPACE}/stage/${DIST_NAME}/bin/clang-cpp.dll"
+fi

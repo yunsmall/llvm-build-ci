@@ -48,6 +48,102 @@ drop_runtime() {
   printf '%s' "$keep"
 }
 
+# 交叉目标的 compiler-rt builtins（软浮点、64 位除法这类编译器辅助函数）。
+# LLVM_BUILTIN_TARGETS 只构建 lib/builtins，不碰 sanitizer，因此不需要目标
+# sysroot，Windows 宿主编 Linux / 裸机目标也能用。
+# 输入留空=默认列表；none=关；all=再加冷门架构
+builtin_targets_default="i686-unknown-linux-gnu
+aarch64-unknown-linux-gnu
+armv7-unknown-linux-gnueabi
+armv7-unknown-linux-gnueabihf
+aarch64-none-elf
+armv6m-none-eabi
+armv7m-none-eabi
+armv7em-none-eabi
+riscv32-unknown-elf
+riscv64-unknown-elf
+riscv64-unknown-linux-gnu
+wasm32-unknown-unknown"
+
+builtin_targets_all="${builtin_targets_default}
+loongarch64-unknown-linux-gnu
+powerpc64le-unknown-linux-gnu
+s390x-unknown-linux-gnu
+mips64el-unknown-linux-gnuabi64
+sparcv9-unknown-linux-gnu
+aarch64_be-unknown-linux-gnu"
+if [ "${RUNNER_OS}" = "Windows" ]; then
+  # Windows 目标的 builtins 需要 clang-cl 和 MSVC 头文件，只有 Windows 宿主编得了
+  builtin_targets_all="${builtin_targets_all}
+i686-pc-windows-msvc
+aarch64-pc-windows-msvc
+x86_64-unknown-linux-gnu"
+fi
+
+# 输入里允许空格、换行、逗号混用，统一成 cmake 要的分号列表
+normalize_targets() {
+  # 最后的  */  至少匹配一个空格；写成  *  会匹配空串，把每个字符之间都插上分号
+  printf '%s' "$1" | tr -s '[:space:]' ' ' |
+    sed -e 's/^ *//' -e 's/ *$//' -e 's/ *, */;/g' -e 's/  */;/g'
+}
+
+case "${BUILTIN_TARGETS:-default}" in
+  default | Default) builtin_targets=$(normalize_targets "$builtin_targets_default") ;;
+  none | off | None | Off) builtin_targets='' ;;
+  all | All) builtin_targets=$(normalize_targets "$builtin_targets_all") ;;
+  *) builtin_targets=$(normalize_targets "$BUILTIN_TARGETS") ;;
+esac
+
+# triple 的第一个字段映射到 LLVM 后端名。builtins 由刚编出来的 clang 编译，
+# 后端没编进 clang 的话配置能过、编译时才会报 unknown target
+target_backend() {
+  case "$1" in
+    x86_64 | i?86 | amd64) echo X86 ;;
+    aarch64* | arm64*) echo AArch64 ;;
+    arm* | thumb*) echo ARM ;;
+    riscv*) echo RISCV ;;
+    wasm32 | wasm64) echo WebAssembly ;;
+    loongarch*) echo LoongArch ;;
+    powerpc* | ppc*) echo PowerPC ;;
+    s390x) echo SystemZ ;;
+    mips*) echo Mips ;;
+    sparc*) echo Sparc ;;
+    avr) echo AVR ;;
+    hexagon) echo Hexagon ;;
+    nvptx*) echo NVPTX ;;
+    amdgpu* | amdgcn*) echo AMDGPU ;;
+    ve) echo VE ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -n "${builtin_targets}" ]; then
+  if ! has_runtime "${projects}" clang; then
+    echo "::error::builtin_targets 需要 clang（builtins 由刚编出来的 clang 编译），但 projects=${projects}"
+    exit 1
+  fi
+
+  builtin_extra_backends=''
+  # triple 里不会有空白，直接按空格拆，避免 here-string 带的换行混进最后一个字段
+  for triple in $(printf '%s' "${builtin_targets}" | tr ';' ' '); do
+    arch=${triple%%-*}
+    if ! backend=$(target_backend "${arch}"); then
+      echo "::error::无法从 ${triple} 推断 LLVM 后端；请把这个 triple 从 builtin_targets 去掉，或手动把对应后端填进 targets"
+      exit 1
+    fi
+    if [ "${targets}" = "all" ]; then
+      continue
+    fi
+    if ! has_runtime "${targets}" "${backend}" && ! has_runtime "${builtin_extra_backends}" "${backend}"; then
+      builtin_extra_backends="${builtin_extra_backends:+$builtin_extra_backends;}$backend"
+    fi
+  done
+  # 只为 builtins 补后端，用户填的 targets 内容原样保留
+  if [ -n "${builtin_extra_backends}" ]; then
+    targets="${targets};${builtin_extra_backends}"
+  fi
+fi
+
 extra=()
 if [ "${RUNNER_OS}" = "Linux" ]; then
   # 用 lld 链接，比 GNU ld 快很多，LLVM 这种巨型项目差别明显
@@ -98,6 +194,36 @@ if [ -n "${runtimes}" ]; then
   fi
 fi
 
+if [ -n "${builtin_targets}" ]; then
+  extra+=("-DLLVM_BUILTIN_TARGETS=${builtin_targets}")
+fi
+# 校验步骤按这个文件逐行检查，空文件表示没请求交叉 builtins
+printf '%s' "${builtin_targets}" | tr ';' '\n' > "${GITHUB_WORKSPACE}/builtins-targets.txt"
+
+# 可选的动态 LLVM 库：Windows 上产 LLVM.dll，Linux 上产 libLLVM-<ver>.so。
+# 自己写测试时链接这个库，就不必每个 exe 静态塞一份 LLVM。
+if [ "${SHARED_LLVM:-false}" = "true" ]; then
+  extra+=("-DLLVM_BUILD_LLVM_DYLIB=ON" "-DLLVM_LINK_LLVM_DYLIB=ON")
+  if [ "${RUNNER_OS}" = "Windows" ]; then
+    # 用 cl.exe 时导出的内联成员不受 /Zc:dllexportInlines- 控制，很容易撞 64k 导出上限；
+    # 转发桩也依赖 lld-link，所以这条路只支持 clang-cl 工具链
+    if ! command -v clang-cl >/dev/null 2>&1 || ! command -v lld-link >/dev/null 2>&1; then
+      echo "::error::shared_llvm 在 Windows 上需要 clang-cl 和 lld-link"
+      exit 1
+    fi
+    # 不设 VIS 时 llvm-shlib 对 MSVC 直接 FATAL "Generating libLLVM is not supported"
+    extra+=("-DLLVM_BUILD_LLVM_DYLIB_VIS=ON")
+    # C API 单独要一个稳定入口就给 LLVM-C.dll。它链的是 LLVM.dll，
+    # 链接器只会生成转发桩，不会再复制一份 LLVM
+    extra+=("-DLLVM_BUILD_LLVM_C_DYLIB=ON")
+    # clang 的 C++ 头没有 LLVM_ABI 注解，clang-cpp.dll 在 Windows 上导不出符号。
+    # 工具改成静态链 clang 自己的库，LLVM 部分仍然走 LLVM.dll
+    extra+=("-DCLANG_LINK_CLANG_DYLIB=OFF")
+    # DLL 和调用方共用一份 CRT：静态 CRT 时跨 DLL 传递分配过的内存会炸
+    extra+=("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL")
+  fi
+fi
+
 # official 档链上一步现编的三个库（路径由那一步写进环境变量），
 # 其余档一律关掉，保证产物不依赖 runner 上碰巧存在的库
 if [ -n "${DEP_ZLIB_LIBRARY:-}" ]; then
@@ -128,7 +254,7 @@ else
   third_party="off"
 fi
 
-echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party}"
+echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party} builtins=${builtin_targets:-<none>} shared_llvm=${SHARED_LLVM:-false}"
 
 # 把实际用的 cmake 命令原样记下来：release notes 要贴这份，
 # 不能靠事后照着 workflow 手抄，手抄的会和真正执行的对不上。
