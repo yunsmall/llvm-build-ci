@@ -231,6 +231,10 @@ fi
 
 extra=()
 extra+=("${builtin_extra_args[@]}")
+# 这些是追加到 CMAKE_C_FLAGS / CMAKE_CXX_FLAGS 的内容。libxml2 的静态宏和
+# 下面 23.1.4 的注解覆盖都要用，分开累加最后一次性写入，避免后一个 -D 覆盖前一个
+win_c_flags=''
+win_cxx_flags=''
 if [ "${RUNNER_OS}" = "Linux" ]; then
   # 用 lld 链接，比 GNU ld 快很多，LLVM 这种巨型项目差别明显
   extra+=("-DLLVM_USE_LINKER=lld")
@@ -314,6 +318,55 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
     # 和 LLVM.dll，COFF 下会报 duplicate symbol（mlir-src-sharder）。
     # CIR 是实验特性，关掉不影响 C/C++ 编译
     extra+=("-DCLANG_ENABLE_CIR=OFF")
+    # 23.1.4 的 VPlan.h 给已经标了 LLVM_ABI 的类成员又标 LLVM_ABI_FOR_TEST，
+    # clang-cl 编 DLL 时直接报 "dllexport cannot be applied to member of
+    # dllexport class"（main 已删掉这些重复注解）。LLVM_ABI_FOR_TEST 只是给
+    # 单元测试用的导出标注，本构建不编测试，所以用强制包含把它定义为空；
+    # LLVM_ABI / LLVM_C_ABI 等其它导出注解按原样保留，不改源码
+    llvm_major=$(sed -n 's/^set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
+      llvm-project/llvm/CMakeLists.txt 2>/dev/null | head -1)
+    if [ -n "${llvm_major}" ] && [ "${llvm_major}" -lt 24 ] &&
+      grep -q LLVM_ABI_GENERATING_ANNOTATIONS llvm-project/llvm/include/llvm/Support/Compiler.h; then
+      override_dir="${GITHUB_WORKSPACE}/llvm-abi-override"
+      mkdir -p "${override_dir}"
+      cat > "${override_dir}/abi-override.h" <<'HEADER'
+/* 只为没有 main 上那个注解修复的旧版本准备：跳过 Compiler.h / Visibility.h
+   的定义，自己给一套等价宏，其中 LLVM_ABI_FOR_TEST 定义为空（不导出测试符号） */
+#ifndef LLVM_ABI_OVERRIDE_H
+#define LLVM_ABI_OVERRIDE_H
+
+#define LLVM_ABI_GENERATING_ANNOTATIONS
+
+#if defined(_WIN32) && !defined(__MINGW32__)
+#if defined(LLVM_EXPORTS)
+#define LLVM_ABI __declspec(dllexport)
+#define LLVM_TEMPLATE_ABI
+#define LLVM_EXPORT_TEMPLATE __declspec(dllexport)
+#define LLVM_C_ABI __declspec(dllexport)
+#else
+#define LLVM_ABI __declspec(dllimport)
+#define LLVM_TEMPLATE_ABI __declspec(dllimport)
+#define LLVM_EXPORT_TEMPLATE
+#define LLVM_C_ABI __declspec(dllimport)
+#endif
+#define LLVM_ABI_EXPORT __declspec(dllexport)
+#else
+#define LLVM_ABI
+#define LLVM_TEMPLATE_ABI
+#define LLVM_EXPORT_TEMPLATE
+#define LLVM_ABI_EXPORT
+#define LLVM_C_ABI
+#endif
+
+#define LLVM_ABI_FOR_TEST
+#define LLVM_ABI_NOT_EXPORTED
+
+#endif
+HEADER
+      override_path=$(printf '%s' "${override_dir}/abi-override.h" | tr '\\' '/')
+      win_c_flags="${win_c_flags} /FI${override_path}"
+      win_cxx_flags="${win_cxx_flags} /FI${override_path}"
+    fi
   fi
 fi
 
@@ -335,7 +388,8 @@ if [ -n "${DEP_ZLIB_LIBRARY:-}" ]; then
   )
   # 静态 libxml2 的头部默认按 dllimport 声明，Windows 上必须显式说静态
   if [ "${RUNNER_OS}" = "Windows" ]; then
-    extra+=("-DCMAKE_C_FLAGS=-DLIBXML_STATIC" "-DCMAKE_CXX_FLAGS=-DLIBXML_STATIC")
+    win_c_flags="${win_c_flags} -DLIBXML_STATIC"
+    win_cxx_flags="${win_cxx_flags} -DLIBXML_STATIC"
   fi
   third_party="zlib+zstd+libxml2"
 else
@@ -345,6 +399,11 @@ else
     "-DLLVM_ENABLE_LIBXML2=OFF"
   )
   third_party="off"
+fi
+
+# Windows 上累积的全局编译宏一次写入；Linux 两个变量都是空的
+if [ -n "${win_c_flags}${win_cxx_flags}" ]; then
+  extra+=("-DCMAKE_C_FLAGS=${win_c_flags# }" "-DCMAKE_CXX_FLAGS=${win_cxx_flags# }")
 fi
 
 echo "preset=${PRESET} targets=${targets} projects=${projects} runtimes=${runtimes:-<none>} third_party=${third_party} builtins=${builtin_targets:-<none>} shared_llvm=${SHARED_LLVM:-false}"
