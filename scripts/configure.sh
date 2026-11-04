@@ -231,8 +231,8 @@ fi
 
 extra=()
 extra+=("${builtin_extra_args[@]}")
-# 这些是追加到 CMAKE_C_FLAGS / CMAKE_CXX_FLAGS 的内容。libxml2 的静态宏和
-# 下面 23.1.4 的注解覆盖都要用，分开累加最后一次性写入，避免后一个 -D 覆盖前一个
+# 这些是追加到 CMAKE_C_FLAGS / CMAKE_CXX_FLAGS 的内容（目前只有 libxml2 的
+# 静态宏），分开累加最后一次性写入，避免后一个 -D 覆盖前一个
 win_c_flags=''
 win_cxx_flags=''
 if [ "${RUNNER_OS}" = "Linux" ]; then
@@ -293,6 +293,20 @@ printf '%s' "${builtin_targets}" | tr ';' '\n' > "${GITHUB_WORKSPACE}/builtins-t
 # 可选的动态 LLVM 库：Windows 上产 LLVM.dll，Linux 上产 libLLVM-<ver>.so。
 # 自己写测试时链接这个库，就不必每个 exe 静态塞一份 LLVM。
 if [ "${SHARED_LLVM:-false}" = "true" ]; then
+  # 23 及更早的导出注解不完整（VPlan 重复注解、缺 IntrusiveRefCntPtr 的 vfs
+  # 特化），Windows 上编不出可用的 LLVM.dll，所以动态库只支持 24 及以后；
+  # 这些版本请用静态构建。版本号在 cmake/Modules/LLVMVersion.cmake 里，
+  # 老源码才直接写在 llvm/CMakeLists.txt
+  llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
+    llvm-project/cmake/Modules/LLVMVersion.cmake 2>/dev/null | head -1)
+  if [ -z "${llvm_major}" ]; then
+    llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
+      llvm-project/llvm/CMakeLists.txt 2>/dev/null | head -1)
+  fi
+  if [ -n "${llvm_major}" ] && [ "${llvm_major}" -lt 24 ]; then
+    echo "::error::shared_llvm 只支持 LLVM 24 及以后：${llvm_major}.x 的导出注解在 Windows 上不完整"
+    exit 1
+  fi
   extra+=("-DLLVM_BUILD_LLVM_DYLIB=ON" "-DLLVM_LINK_LLVM_DYLIB=ON")
   if [ "${RUNNER_OS}" = "Windows" ]; then
     # 用 cl.exe 时导出的内联成员不受 /Zc:dllexportInlines- 控制，很容易撞 64k 导出上限；
@@ -318,71 +332,6 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
     # 和 LLVM.dll，COFF 下会报 duplicate symbol（mlir-src-sharder）。
     # CIR 是实验特性，关掉不影响 C/C++ 编译
     extra+=("-DCLANG_ENABLE_CIR=OFF")
-    # 23.1.4 的 VPlan.h 给已经标了 LLVM_ABI 的类成员又标 LLVM_ABI_FOR_TEST，
-    # clang-cl 编 DLL 时直接报 "dllexport cannot be applied to member of
-    # dllexport class"（main 已删掉这些重复注解）。LLVM_ABI_FOR_TEST 只是给
-    # 单元测试用的导出标注，本构建不编测试，所以用强制包含把它定义为空；
-    # LLVM_ABI / LLVM_C_ABI 等其它导出注解按原样保留，不改源码
-    # 版本号在 cmake/Modules/LLVMVersion.cmake 里（23.x 的 llvm/CMakeLists.txt
-    # 只剩 project(LLVM VERSION ${LLVM_VERSION_MAJOR}...) 的引用），老源码才把
-    # set(LLVM_VERSION_MAJOR ...) 直接写在 llvm/CMakeLists.txt
-    llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
-      llvm-project/cmake/Modules/LLVMVersion.cmake 2>/dev/null | head -1)
-    if [ -z "${llvm_major}" ]; then
-      llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
-        llvm-project/llvm/CMakeLists.txt 2>/dev/null | head -1)
-    fi
-    # 解析不出主版本（源码布局又变了）但注解宏还在，说明多半是没修的版本，
-    # 这时也照常覆盖；main 上重复注解已经删掉，多这一层覆盖不影响结果
-    if grep -q LLVM_ABI_GENERATING_ANNOTATIONS llvm-project/llvm/include/llvm/Support/Compiler.h &&
-      { [ -z "${llvm_major}" ] || [ "${llvm_major}" -lt 24 ]; }; then
-      override_dir="${GITHUB_WORKSPACE}/llvm-abi-override"
-      mkdir -p "${override_dir}"
-      cat > "${override_dir}/abi-override.h" <<'HEADER'
-/* 只为没有 main 上那个注解修复的旧版本准备：跳过 Compiler.h / Visibility.h
-   的定义，自己给一套等价宏，其中 LLVM_ABI_FOR_TEST 定义为空（不导出测试符号）。
-   LLVM_BUILD_STATIC 必须保留：链接静态组件库的工具（llvm-min-tblgen 等）靠它
-   关掉导出注解，否则会把静态库里的符号当成 dllimport 引用而链接失败 */
-#ifndef LLVM_ABI_OVERRIDE_H
-#define LLVM_ABI_OVERRIDE_H
-
-#define LLVM_ABI_GENERATING_ANNOTATIONS
-
-#if defined(_WIN32) && !defined(__MINGW32__) && !defined(LLVM_BUILD_STATIC)
-#if defined(LLVM_EXPORTS)
-#define LLVM_ABI __declspec(dllexport)
-#define LLVM_TEMPLATE_ABI
-#define LLVM_EXPORT_TEMPLATE __declspec(dllexport)
-#define LLVM_C_ABI __declspec(dllexport)
-#else
-#define LLVM_ABI __declspec(dllimport)
-#define LLVM_TEMPLATE_ABI __declspec(dllimport)
-#define LLVM_EXPORT_TEMPLATE
-#define LLVM_C_ABI __declspec(dllimport)
-#endif
-#define LLVM_ABI_EXPORT __declspec(dllexport)
-#else
-#define LLVM_ABI
-#define LLVM_TEMPLATE_ABI
-#define LLVM_EXPORT_TEMPLATE
-#define LLVM_ABI_EXPORT
-#define LLVM_C_ABI
-#endif
-
-#define LLVM_ABI_FOR_TEST
-#define LLVM_ABI_NOT_EXPORTED
-
-#endif
-HEADER
-      override_path=$(printf '%s' "${override_dir}/abi-override.h" | tr '\\' '/')
-      # 不能用 /FI：这串参数要经 Git Bash 转交给 cmake.exe，MSYS 会把
-      # "/FID:/a/..." 当成 POSIX 路径改写（实测变成 "C:/Program Files/Git/FID;..."
-      # 再被 CMake 按分号拆成两个源文件）。-Xclang 形式的实参不以斜杠开头，
-      # 不会被路径转换，clang-cl 会原样转给 cc1
-      force_include="-Xclang -include -Xclang ${override_path}"
-      win_c_flags="${win_c_flags} ${force_include}"
-      win_cxx_flags="${win_cxx_flags} ${force_include}"
-    fi
   fi
 fi
 

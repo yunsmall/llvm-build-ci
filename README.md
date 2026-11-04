@@ -125,6 +125,9 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
 
 `shared_llvm=true` 时额外编动态库，自己写测试链接它就不用每个 exe 静态塞一份 LLVM：
 
+- 只支持 LLVM 24 及以后：23 及更早的导出注解不完整（`VPlan.h` 里成员重复标注、
+  缺 `IntrusiveRefCntPtrInfo<vfs::FileSystem>` 特化），Windows 上编不出可用的
+  `LLVM.dll`，`shared_llvm=true` 遇到这些版本会直接报错，请改用静态构建。
 - Linux：`libLLVM-<ver>.so` 和 `libclang-cpp.so`，`clang` 等工具通过
   `LLVM_LINK_LLVM_DYLIB` 链到它们上面。
 - Windows：同时产 `LLVM-<主版本><版本后缀>.dll`（C++ API，主线现在是
