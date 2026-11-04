@@ -488,4 +488,7 @@ cmake_args=(
 } > "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
 cat "${GITHUB_WORKSPACE}/cmake-cmd-${RUNNER_OS}.md"
 
-cmake "${cmake_args[@]}"
+# MSYS2_ARG_CONV_EXCL='*'：Git Bash 把参数转交给原生 cmake.exe 时会把以斜杠
+# 开头的“路径”改写成 Windows 路径，之前 -DCMAKE_C_FLAGS=/FI... 就被改坏过；
+# 这里的参数全是 Windows 路径或普通选项，不需要任何转换
+MSYS2_ARG_CONV_EXCL='*' cmake "${cmake_args[@]}"
