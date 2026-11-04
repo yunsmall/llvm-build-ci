@@ -323,10 +323,19 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
     # dllexport class"（main 已删掉这些重复注解）。LLVM_ABI_FOR_TEST 只是给
     # 单元测试用的导出标注，本构建不编测试，所以用强制包含把它定义为空；
     # LLVM_ABI / LLVM_C_ABI 等其它导出注解按原样保留，不改源码
-    llvm_major=$(sed -n 's/^set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
-      llvm-project/llvm/CMakeLists.txt 2>/dev/null | head -1)
-    if [ -n "${llvm_major}" ] && [ "${llvm_major}" -lt 24 ] &&
-      grep -q LLVM_ABI_GENERATING_ANNOTATIONS llvm-project/llvm/include/llvm/Support/Compiler.h; then
+    # 版本号在 cmake/Modules/LLVMVersion.cmake 里（23.x 的 llvm/CMakeLists.txt
+    # 只剩 project(LLVM VERSION ${LLVM_VERSION_MAJOR}...) 的引用），老源码才把
+    # set(LLVM_VERSION_MAJOR ...) 直接写在 llvm/CMakeLists.txt
+    llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
+      llvm-project/cmake/Modules/LLVMVersion.cmake 2>/dev/null | head -1)
+    if [ -z "${llvm_major}" ]; then
+      llvm_major=$(sed -n 's/^ *set(LLVM_VERSION_MAJOR \([0-9][0-9]*\)).*/\1/p' \
+        llvm-project/llvm/CMakeLists.txt 2>/dev/null | head -1)
+    fi
+    # 解析不出主版本（源码布局又变了）但注解宏还在，说明多半是没修的版本，
+    # 这时也照常覆盖；main 上重复注解已经删掉，多这一层覆盖不影响结果
+    if grep -q LLVM_ABI_GENERATING_ANNOTATIONS llvm-project/llvm/include/llvm/Support/Compiler.h &&
+      { [ -z "${llvm_major}" ] || [ "${llvm_major}" -lt 24 ]; }; then
       override_dir="${GITHUB_WORKSPACE}/llvm-abi-override"
       mkdir -p "${override_dir}"
       cat > "${override_dir}/abi-override.h" <<'HEADER'
