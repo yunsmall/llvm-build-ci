@@ -116,9 +116,9 @@ SHA 校验兜底。
 产物在 `lib/clang/<ver>/lib/<triple>/` 下，clang 用 `--target=<triple>` 时自动能找到。
 
 代价：每个 triple 一次配置加少量编译，1～3 分钟；默认 12 个大约多 15～30 分钟，
-`all` 再多 15～20 分钟，每个 triple 的产物只有几 MB。交叉编的**只有 builtins**，
-同时关掉 `crtbegin/crtend`（Linux 宿主会按宿主 OS 顺带编，但 wasm32 这类架构没有
-init/fini 实现会直接报错，Windows 宿主本来也不编；关掉保证两边产物一致）；
+`all` 再多 15～20 分钟，每个 triple 的产物只有几 MB。交叉编的**只有 builtins**；
+wasm 目标额外关掉 `crtbegin/crtend`（wasm 没有 init/fini 机制，crtbegin.c 会直接
+报错），其余目标在 Linux 宿主上照常编 crt，Windows 宿主本来就不编 crt；
 sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 和 crt）。
 
 ## 动态 LLVM 库

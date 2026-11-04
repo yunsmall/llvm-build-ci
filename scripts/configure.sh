@@ -136,10 +136,11 @@ if [ -n "${builtin_targets}" ]; then
       echo "::error::无法从 ${triple} 推断 LLVM 后端；请把这个 triple 从 builtin_targets 去掉，或手动把对应后端填进 targets"
       exit 1
     fi
-    # Linux 宿主的 builtins 子构建会按宿主 OS 顺带编 crtbegin/crtend，wasm32
-    # 这类没有 init/fini 实现的架构会直接报错；Windows 宿主本来就不编。
-    # 交叉只需要 builtins 库本身，统一关掉让两个宿主的产物一致
-    builtin_extra_args+=("-DBUILTINS_${triple}_COMPILER_RT_BUILD_CRT=OFF")
+    # wasm 没有 .init_array / init-fini 机制，crtbegin.c 直接 #error；只给 wasm
+    # 关掉，其余目标的 crt 在 Linux 宿主上照常编（宿主自己那份不受这里影响）
+    case "${arch}" in
+      wasm32 | wasm64) builtin_extra_args+=("-DBUILTINS_${triple}_COMPILER_RT_BUILD_CRT=OFF") ;;
+    esac
     # Linux / 裸机目标要 freestanding：否则 clang 的 limits.h、stdint.h 会
     # include_next 宿主 glibc（i686 上直接缺 bits/libc-header-start.h 而失败）。
     # Windows 目标走 clang-cl，不接受这个 flag，且 MSVC 头本来就在
