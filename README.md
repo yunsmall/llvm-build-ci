@@ -211,8 +211,9 @@ Windows 上编译时用的是 runner 镜像自带的 `clang-cl` + `lld-link` 自
 
 ## 每日定时构建
 
-workflow 里带了一个 `schedule`：每天**北京时间 00:17**（UTC 16:17）用**官方那套参数**
-（`main` + `preset=official` + `both` + `zstd`）编一次主线，**不发布 Release**，产物就在
+workflow 里带了一个 `schedule`：每天**北京时间 00:17**（UTC 16:17）用**发布时那套最全参数**
+（`main` + `preset=official` + 全部后端 + 全部交叉 builtins + 动态库 + `both` + `zstd`）
+编一次主线，等于每天把发布配置完整验证一遍，**不发布 Release**，产物就在
 Actions 的 artifact 里，保留 14 天。
 
 分钟位不写 0 是有原因的：整点是 GitHub 调度器最挤的刻度，实测 `0 16 * * *` 一整个时段

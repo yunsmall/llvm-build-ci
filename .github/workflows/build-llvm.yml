@@ -266,20 +266,20 @@ jobs:
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
           # 定时构建没有 inputs，兜底走 official（和官方包同款）；手动触发时
-          # inputs.preset 有值（默认 simple），不受影响
+          # inputs.preset 有值（默认 simple），不受影响。每日构建额外打开
+          # 全部后端、全部交叉 builtins 和动态库，等于每天验证一遍发布参数
           PRESET: ${{ inputs.preset || 'official' }}
-          TARGETS: ${{ inputs.targets }}
+          TARGETS: ${{ inputs.targets || (github.event_name == 'schedule' && 'all' || '') }}
           PROJECTS: ${{ inputs.projects }}
           RUNTIMES: ${{ inputs.runtimes }}
-          BUILTIN_TARGETS: ${{ inputs.builtin_targets }}
-          SHARED_LLVM: ${{ inputs.shared_llvm }}
+          BUILTIN_TARGETS: ${{ inputs.builtin_targets || (github.event_name == 'schedule' && 'all' || '') }}
+          SHARED_LLVM: ${{ inputs.shared_llvm || (github.event_name == 'schedule' && 'true' || 'false') }}
         run: bash scripts/configure.sh
 
       - name: 编译并安装
         shell: bash
         env:
           DIST_NAME: ${{ steps.dist.outputs.name }}
-          SHARED_LLVM: ${{ inputs.shared_llvm }}
         run: bash scripts/build-install.sh
 
       - name: 校验交叉 builtins
