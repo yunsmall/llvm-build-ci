@@ -141,8 +141,7 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
 - Windows 的 `clang-cpp` 不参与动态链接：clang 的 C++ 头只有少量 `CLANG_ABI`
   注解，`clang-cpp.dll` 导不出完整 API。工具静态链 clang 自己的库，LLVM 部分仍走
   `LLVM-24git.dll`。运行时会顺带装一个与 `clang.exe` 字节完全相同的
-  `clang-cpp.exe`，那只是驱动的一份拷贝，不是库。构建脚本会删掉安装目录里
-  可能出现的 `clang-cpp.dll`（只删这一个文件）。
+  `clang-cpp.exe`，那只是驱动的一份拷贝，不是库。
   静态链 clang 库时 C++ 标准库仍是动态的：整个构建用 `/MD`，运行时依赖
   `msvcp140.dll` / `vcruntime140.dll`。
 
