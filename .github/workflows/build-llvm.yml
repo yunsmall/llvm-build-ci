@@ -42,7 +42,7 @@ on:
         default: ''
       shared_llvm:
         type: boolean
-        description: '编动态 LLVM 库（Windows 产 LLVM.dll + LLVM-C.dll、Linux 产 libLLVM-<ver>.so），自己写测试时链接它，不用每个 exe 静态带一份 LLVM'
+        description: '编动态 LLVM 库（Windows 产 LLVM.dll + LLVM-C.dll、Linux 产 libLLVM-<ver>.so），自己写测试时链接它，不用每个 exe 静态带一份 LLVM；仅支持 LLVM 24 及以后'
         default: false
       platforms:
         type: choice
