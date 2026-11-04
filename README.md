@@ -125,10 +125,12 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
 
 - Linux：`libLLVM-<ver>.so` 和 `libclang-cpp.so`，`clang` 等工具通过
   `LLVM_LINK_LLVM_DYLIB` 链到它们上面。
-- Windows：同时产 `LLVM.dll`（C++ API）和 `LLVM-C.dll`（C API），以及各自的导入库。
-  `LLVM-C.dll` 链接 `LLVM.dll`，链接器只会生成转发桩，不会复制第二份 LLVM；
-  实测 4 KB 级别。上游在 MSVC/clang-cl 上不设 `LLVM_BUILD_LLVM_DYLIB_VIS=ON`
-  会直接报 `Generating libLLVM is not supported on MSVC`，所以 Windows 上必须开。
+- Windows：同时产 `LLVM-<主版本><版本后缀>.dll`（C++ API，主线现在是
+  `LLVM-24git.dll`，导入库 `LLVM-24git.lib`）和 `LLVM-C.dll`（C API，
+  导入库 `LLVM-C.lib`）。`LLVM-C.dll` 链接前者，链接器只会生成转发桩，
+  不会复制第二份 LLVM；实测 129 KB 对 96 MB。上游在 MSVC/clang-cl 上不设
+  `LLVM_BUILD_LLVM_DYLIB_VIS=ON` 会直接报 `Generating libLLVM is not supported
+  on MSVC`，所以 Windows 上必须开。
   CRT 同时切成动态 `/MD`（`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL`），避免
   跨 DLL 传递分配过的内存时出现两套堆。PCH 同时禁用
   （`CMAKE_DISABLE_PRECOMPILE_HEADERS=ON`）：PCH 对象里的 inline 模板实例会和
@@ -138,7 +140,9 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
   `duplicate symbol`。CIR 是实验特性，关掉不影响正常 C/C++ 编译。
 - Windows 的 `clang-cpp` 不参与动态链接：clang 的 C++ 头只有少量 `CLANG_ABI`
   注解，`clang-cpp.dll` 导不出完整 API。工具静态链 clang 自己的库，LLVM 部分仍走
-  `LLVM.dll`；构建顺带产生的 `clang-cpp.dll` 会从安装目录删掉（只删这一个文件）。
+  `LLVM-24git.dll`。运行时会顺带装一个与 `clang.exe` 字节完全相同的
+  `clang-cpp.exe`，那只是驱动的一份拷贝，不是库。构建脚本会删掉安装目录里
+  可能出现的 `clang-cpp.dll`（只删这一个文件）。
   静态链 clang 库时 C++ 标准库仍是动态的：整个构建用 `/MD`，运行时依赖
   `msvcp140.dll` / `vcruntime140.dll`。
 
@@ -147,8 +151,15 @@ sanitizer / profile 仍然只编宿主那一份（交叉它们需要目标 libc 
 
 注意：
 
+- 用 C++ API 时，调用方编译要加 `-DLLVM_BUILD_STATIC`（CMake 里
+  `target_compile_definitions(... PRIVATE LLVM_BUILD_STATIC)`），链接参数仍用
+  `LLVM-24git.lib`、运行时仍依赖 `LLVM-24git.dll`。不加的话头文件会把整个类标成
+  `dllimport`，类里那些 inline 成员（比如 `raw_ostream::operator<<(const char *)`）
+  一旦没被内联就会去找 `__imp_` 符号，而这些 inline 成员 DLL 里本来就没有。
+  C API（`LLVM-C.lib`）不需要这个宏。
 - `LLVM_BUILD_LLVM_DYLIB_VIS` 上游仍标注为“用于测试”，Windows 上的导出依赖
   `LLVM_ABI` 注解，可能有个别符号没导出；遇到链接错误先确认是不是缺导出。
+  实测这份 `LLVM-24git.dll` 导出 28274 个 C++ 符号、`LLVM-C.dll` 导出 1273 个 C 符号。
 - C++ API 没有 ABI 稳定保证。调用方要和构建时用同一套 ABI 和 CRT（Windows 上
   同一 MSVC 运行时、同一个 `_ITERATOR_DEBUG_LEVEL`），不要混用 MSVC 和 MinGW。
 - Windows 上因为改用动态 CRT，产物运行时依赖 VC++ 运行库
