@@ -373,8 +373,13 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
 #endif
 HEADER
       override_path=$(printf '%s' "${override_dir}/abi-override.h" | tr '\\' '/')
-      win_c_flags="${win_c_flags} /FI${override_path}"
-      win_cxx_flags="${win_cxx_flags} /FI${override_path}"
+      # 不能用 /FI：这串参数要经 Git Bash 转交给 cmake.exe，MSYS 会把
+      # "/FID:/a/..." 当成 POSIX 路径改写（实测变成 "C:/Program Files/Git/FID;..."
+      # 再被 CMake 按分号拆成两个源文件）。-Xclang 形式的实参不以斜杠开头，
+      # 不会被路径转换，clang-cl 会原样转给 cc1
+      force_include="-Xclang -include -Xclang ${override_path}"
+      win_c_flags="${win_c_flags} ${force_include}"
+      win_cxx_flags="${win_cxx_flags} ${force_include}"
     fi
   fi
 fi
