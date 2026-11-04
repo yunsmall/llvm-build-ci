@@ -340,13 +340,15 @@ if [ "${SHARED_LLVM:-false}" = "true" ]; then
       mkdir -p "${override_dir}"
       cat > "${override_dir}/abi-override.h" <<'HEADER'
 /* 只为没有 main 上那个注解修复的旧版本准备：跳过 Compiler.h / Visibility.h
-   的定义，自己给一套等价宏，其中 LLVM_ABI_FOR_TEST 定义为空（不导出测试符号） */
+   的定义，自己给一套等价宏，其中 LLVM_ABI_FOR_TEST 定义为空（不导出测试符号）。
+   LLVM_BUILD_STATIC 必须保留：链接静态组件库的工具（llvm-min-tblgen 等）靠它
+   关掉导出注解，否则会把静态库里的符号当成 dllimport 引用而链接失败 */
 #ifndef LLVM_ABI_OVERRIDE_H
 #define LLVM_ABI_OVERRIDE_H
 
 #define LLVM_ABI_GENERATING_ANNOTATIONS
 
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if defined(_WIN32) && !defined(__MINGW32__) && !defined(LLVM_BUILD_STATIC)
 #if defined(LLVM_EXPORTS)
 #define LLVM_ABI __declspec(dllexport)
 #define LLVM_TEMPLATE_ABI
