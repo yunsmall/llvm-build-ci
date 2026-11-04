@@ -202,10 +202,13 @@ HEADER
             # CMake 参数里的反斜杠会被当转义符，Windows 宿主下换成斜杠
             stub_flags=$(printf '%s' "${stub_include}" | tr '\\' '/')
             cflags="${cflags} -I${stub_flags}"
-            builtin_extra_args+=("-DBUILTINS_${triple}_COMPILER_RT_BAREMETAL_BUILD=ON")
             ;;
         esac
         builtin_extra_args+=("-DBUILTINS_${triple}_CMAKE_C_FLAGS=${cflags}")
+        # C++ 那份也要加：aarch64 的 emupac.cpp 会 include 带 stdint.h 的头，
+        # Linux 宿主上不 freestanding 就会 include_next 到 /usr/include/stdint.h，
+        # 再找目标架构的 bits/libc-header-start.h 而失败
+        builtin_extra_args+=("-DBUILTINS_${triple}_CMAKE_CXX_FLAGS=${cflags}")
         ;;
     esac
     if [ "${targets}" = "all" ]; then
