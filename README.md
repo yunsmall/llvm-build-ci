@@ -102,9 +102,12 @@ SHA 校验兜底。
 
 `builtin_targets=all` 再追加 `loongarch64-unknown-linux-gnu`、
 `powerpc64le-unknown-linux-gnu`、`s390x-unknown-linux-gnu`、`mips64el-unknown-linux-gnuabi64`、
-`sparcv9-unknown-linux-gnu`、`aarch64_be-unknown-linux-gnu`；Windows 宿主再加
+`sparcv9-unknown-linux-gnu`；Windows 宿主再加
 `i686-pc-windows-msvc`、`aarch64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`。
 也可以自己填任意 triple，空格、换行、逗号、分号分隔都行。
+
+没有 `aarch64_be-unknown-linux-gnu`：compiler-rt 的架构表里只有 `aarch64`，按 triple
+前缀推出来的 `aarch64_be` 不在表里，子构建一个文件都不编，只会让校验步骤报缺库。
 
 两个自动行为：
 

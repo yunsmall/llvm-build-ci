@@ -22,18 +22,19 @@ found_builtins() {
 }
 
 missing=0
-while IFS= read -r triple; do
+# 最后一行没有换行时 read 会返回非零但仍填好 triple，不能因此漏掉它
+while IFS= read -r triple || [ -n "${triple}" ]; do
   [ -n "${triple}" ] || continue
 
   # 安装目录按规范化后的 triple 命名（aarch64-none-elf -> aarch64-unknown-none-elf），
   # 拿原始字符串拼路径会找不到
-  canonical=$("${clang_bin}" --target="${triple}" -print-target-triple 2>/dev/null | tr -d '\r')
+  canonical=$("${clang_bin}" --target="${triple}" -print-target-triple 2>/dev/null | tr -d '\r' || true)
   [ -n "${canonical}" ] || canonical="${triple}"
 
   # 驱动只在目录真实存在时才打印运行时目录，否则输出 "(runtime dir is not present)"；
   # Windows 下打印的是反斜杠路径，统一成斜杠再喂给 compgen
   runtime_dir=''
-  if out=$("${clang_bin}" --target="${triple}" -print-runtime-dir 2>/dev/null); then
+  if out=$("${clang_bin}" --target="${triple}" -print-runtime-dir 2>/dev/null || true); then
     out=$(printf '%s' "${out}" | tr -d '\r' | tr '\\' '/')
     case "${out}" in
       "("*) ;;
@@ -44,7 +45,7 @@ while IFS= read -r triple; do
   # 驱动在 --rtlib=compiler-rt 下打印的路径就是链接时真正会用的文件，能打印就
   # 优先按它验证：目录里有文件但驱动找不到（命名/布局不一致）等于白编
   driver_lib=$("${clang_bin}" --target="${triple}" --rtlib=compiler-rt \
-      -print-libgcc-file-name 2>/dev/null | tr -d '\r')
+      -print-libgcc-file-name 2>/dev/null | tr -d '\r' || true)
   if [ -n "${driver_lib}" ] && [ -f "${driver_lib}" ]; then
     echo "builtins: ${triple} -> ${driver_lib}"
   elif [ -n "${runtime_dir}" ] && found_builtins "${runtime_dir}"; then

@@ -70,8 +70,9 @@ loongarch64-unknown-linux-gnu
 powerpc64le-unknown-linux-gnu
 s390x-unknown-linux-gnu
 mips64el-unknown-linux-gnuabi64
-sparcv9-unknown-linux-gnu
-aarch64_be-unknown-linux-gnu"
+sparcv9-unknown-linux-gnu"
+# 没有 aarch64_be：compiler-rt 的架构表只认 aarch64，按 triple 前缀推出的
+# aarch64_be 不在表里，交集为空，子构建一个文件都不编，只会让校验步骤报缺库
 if [ "${RUNNER_OS}" = "Windows" ]; then
   # Windows 目标的 builtins 需要 clang-cl 和 MSVC 头文件，只有 Windows 宿主编得了
   builtin_targets_all="${builtin_targets_all}
@@ -287,8 +288,12 @@ fi
 if [ -n "${builtin_targets}" ]; then
   extra+=("-DLLVM_BUILTIN_TARGETS=${builtin_targets}")
 fi
-# 校验步骤按这个文件逐行检查，空文件表示没请求交叉 builtins
-printf '%s' "${builtin_targets}" | tr ';' '\n' > "${GITHUB_WORKSPACE}/builtins-targets.txt"
+# 校验步骤按这个文件逐行检查，空文件表示没请求交叉 builtins。
+# 末尾必须留换行：while read 遇到没有换行的最后一行会直接跳过，
+# 之前 Linux 上的 aarch64_be 就是这样一直没被校验
+if [ -n "${builtin_targets}" ]; then
+  printf '%s\n' "$(printf '%s' "${builtin_targets}" | tr ';' '\n')"
+fi > "${GITHUB_WORKSPACE}/builtins-targets.txt"
 
 # 可选的动态 LLVM 库：Windows 上产 LLVM.dll，Linux 上产 libLLVM-<ver>.so。
 # 自己写测试时链接这个库，就不必每个 exe 静态塞一份 LLVM。
